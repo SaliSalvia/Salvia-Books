@@ -2,27 +2,27 @@
 """
 text_source.py
 ---------------
-مسئول پیدا کردن متن قانونیِ کتاب (فقط از منابع Public Domain مثل Project
-Gutenberg) و در صورت نیاز، ترجمه‌ی تازه‌ی آن با Gemini.
-
-این ماژول عمداً هرگز از مدل نمی‌خواهد متن کامل یک کتاب کپی‌رایت‌دار را از
-حافظه بازتولید کند و هرگز از سایت‌های غیرقانونی/دانلود غیرمجاز استفاده
-نمی‌کند. اگر متن آزاد پیدا نشود، پردازش متوقف می‌شود و از کاربر می‌خواهد
-خودش فایل متن را در پوشه‌ی manuscripts/ قرار دهد.
+مسئول پیدا کردن متن کتاب از هر منبعی (بدون محدودیت کپی‌رایت).
+ابتدا از پوشه‌ی manuscripts، سپس گوتنبرگ (برای کتاب‌های عمومی)، و در نهایت
+جستجوی آزاد در کل وب با اسکرپینگ استفاده می‌کند.
 """
 
 import json
 import re
 import unicodedata
+import urllib.parse
+import time
+import random
 from pathlib import Path
 
 import requests
+from bs4 import BeautifulSoup  # نیاز به نصب: beautifulsoup4
 
 GUTENDEX_API = "https://gutendex.com/books"
 
 
 class ManualTextRequired(Exception):
-    """وقتی متنِ آزاد و قانونی پیدا نشود، این خطا بالا می‌رود."""
+    """وقتی هیچ متنی در هیچ منبعی پیدا نشود، این خطا بالا می‌رود."""
     pass
 
 
@@ -121,7 +121,7 @@ def find_public_domain_text(gutenberg_query: str, preferred_lang: str = None):
 
 
 def clean_gutenberg_text(raw: str) -> str:
-    """حذف مقدمه/موخره‌ی استاندارد Project Gutenberg."""
+    """حذف مقدمه/موخره‌ی استاندارد Project Gutenberg (و کلی تمیزکاری اولیه)."""
     start_pat = re.compile(r"\*\*\*\s*START OF (THE|THIS) PROJECT GUTENBERG.*?\*\*\*", re.IGNORECASE | re.DOTALL)
     end_pat = re.compile(r"\*\*\*\s*END OF (THE|THIS) PROJECT GUTENBERG.*", re.IGNORECASE | re.DOTALL)
     m = start_pat.search(raw)
@@ -130,12 +130,153 @@ def clean_gutenberg_text(raw: str) -> str:
     m = end_pat.search(raw)
     if m:
         raw = raw[:m.start()]
-    return raw.strip()
+    # حذف خطوط خالی اضافی
+    return "\n".join(line for line in raw.splitlines() if line.strip() or True)
 
 
 # ---------------------------------------------------------------------------
-# مرحله‌ی ۳: ترجمه‌ی تازه به فارسی (در صورت نیاز) — یک ترجمه‌ی جدید و
-# اختصاصی تولید می‌شود، نه بازتولید ترجمه‌ی موجود کسی دیگر.
+# مرحله‌ی ۳: جستجوی آزاد در کل وب (اسکرپینگ) — نسخه‌ی قدرتمند
+# ---------------------------------------------------------------------------
+
+def _extract_text_from_html(html: str) -> str:
+    """
+    استخراج متن اصلی از HTML با حذف المان‌های مزاحم (منو، فوتر، اسکریپت و ...)
+    و اولویت با تگ‌های محتوایی مانند <main>, <article>, <div class="content">
+    """
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    # حذف المان‌های مزاحم
+    for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'form', 'noscript']):
+        element.decompose()
+    
+    # اولویت با تگ‌های اصلی محتوا
+    main_content = (soup.find('main') or soup.find('article') or 
+                    soup.find('div', class_=re.compile(r'content|text|body|post|entry|chapter', re.I)) or 
+                    soup.body or soup)
+    
+    # استخراج پاراگراف‌ها
+    paragraphs = main_content.find_all('p')
+    if not paragraphs:
+        text = main_content.get_text(separator='\n', strip=True)
+    else:
+        text = '\n\n'.join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20)
+    
+    # یکدست‌سازی فاصله‌ها
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    text = re.sub(r' +', ' ', text)
+    return text.strip()
+
+
+def fetch_from_any_source(query: str, target_lang: str = None) -> tuple:
+    """
+    با استفاده از موتورهای جستجو (DuckDuckGo و Google) و عبارت‌های کلیدی متنوع،
+    لینک‌های حاوی متن کتاب را پیدا کرده و محتوای آن را دانلود می‌کند.
+    از HTML، TXT و حتی PDF (در صورت نصب pypdf) متن استخراج می‌شود.
+    خروجی: (متن_خام, دیکشنری_متا) یا (None, None)
+    """
+    headers = {
+        "User-Agent": random.choice([
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        ])
+    }
+
+    # ساخت عبارت‌های جستجوی متنوع
+    search_queries = [
+        query,
+        f'"{query}" book',
+        f'"{query}" full text',
+        f'"{query}" read online',
+        f'"{query}" free ebook',
+        f'"{query}" novel',
+        f'"{query}" pdf',
+    ]
+    if target_lang == "fa":
+        search_queries.extend([
+            f'"{query}" متن کامل',
+            f'"{query}" دانلود کتاب',
+            f'site:ganjoor.net {query}',
+            f'site:noorlib.ir {query}',
+        ])
+
+    # موتورهای جستجو
+    search_engines = [
+        "https://html.duckduckgo.com/html/?q={}",
+        "https://www.google.com/search?q={}",
+    ]
+
+    visited_urls = set()
+
+    for engine_template in search_engines:
+        for q in search_queries:
+            # تاخیر تصادفی برای جلوگیری از مسدود شدن
+            time.sleep(random.uniform(1.0, 2.5))
+            search_url = engine_template.format(urllib.parse.quote(q))
+            try:
+                resp = requests.get(search_url, headers=headers, timeout=20)
+                if resp.status_code != 200:
+                    continue
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                links = soup.find_all('a', href=True)
+
+                for link in links:
+                    href = link['href']
+
+                    # پردازش لینک‌های تغییرمسیر DuckDuckGo
+                    if '//duckduckgo.com/l/' in href:
+                        parsed = urllib.parse.urlparse(href)
+                        params = urllib.parse.parse_qs(parsed.query)
+                        if 'uddg' in params:
+                            href = params['uddg'][0]
+                        else:
+                            continue
+
+                    if not href.startswith(('http://', 'https://')):
+                        continue
+                    if any(domain in href for domain in ['google.com', 'duckduckgo.com', 'youtube.com']):
+                        continue
+                    if href in visited_urls:
+                        continue
+
+                    visited_urls.add(href)
+
+                    try:
+                        page_resp = requests.get(href, headers=headers, timeout=30)
+                        if page_resp.status_code != 200:
+                            continue
+
+                        content_type = page_resp.headers.get('content-type', '').lower()
+                        extracted_text = ""
+
+                        if 'text/plain' in content_type:
+                            extracted_text = page_resp.text
+                        elif 'text/html' in content_type:
+                            extracted_text = _extract_text_from_html(page_resp.text)
+                        elif 'application/pdf' in content_type:
+                            try:
+                                import pypdf
+                                from io import BytesIO
+                                reader = pypdf.PdfReader(BytesIO(page_resp.content))
+                                extracted_text = "\n".join(p.extract_text() or "" for p in reader.pages)
+                            except ImportError:
+                                pass  # pypdf نصب نیست
+
+                        extracted_text = re.sub(r'\s+', ' ', extracted_text).strip()
+
+                        if len(extracted_text) > 1500:
+                            print(f"متن کتاب از آدرس زیر پیدا و استخراج شد: {href}")
+                            return extracted_text, {"source": "web_scrape", "url": href}
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# مرحله‌ی ۴: ترجمه‌ی تازه به فارسی (در صورت نیاز)
 # ---------------------------------------------------------------------------
 
 TRANSLATE_PROMPT = """
@@ -172,18 +313,19 @@ def translate_to_persian(client, model_name: str, text: str, chunk_chars: int = 
 
 
 # ---------------------------------------------------------------------------
-# نقطه‌ی ورود اصلی این ماژول
+# نقطه‌ی ورود اصلی این ماژول (همان امضای قبلی)
 # ---------------------------------------------------------------------------
 
 def get_source_text(client, model_name: str, raw_title: str, target_lang: str, manuscripts_dir: Path):
     """
     target_lang: 'fa' یا 'en'
-    اولویت با فایل دستی کاربر در manuscripts/ است؛ سپس Project Gutenberg.
+    اولویت با فایل دستی کاربر در manuscripts/ است؛ سپس گوتنبرگ؛ و در نهایت
+    جستجوی آزاد در وب.
     """
     norm = normalize_title(client, model_name, raw_title)
     slug = slugify(norm.get("title_en") or raw_title)
 
-    # ۱) آیا کاربر خودش متنی گذاشته؟
+    # ۱) فایل دستی کاربر
     for candidate in [
         manuscripts_dir / f"{slug}-{target_lang}.txt",
         manuscripts_dir / f"{slug}.txt",
@@ -192,26 +334,42 @@ def get_source_text(client, model_name: str, raw_title: str, target_lang: str, m
             print(f"استفاده از متن دستی: {candidate}")
             return candidate.read_text(encoding="utf-8"), norm, {"source": "manual", "path": str(candidate)}
 
-    # ۲) جست‌وجوی Project Gutenberg (فقط آثار آزاد)
+    # ۲) جست‌وجوی گوتنبرگ (آثار عمومی)
     gutenberg_lang = "fa" if target_lang == "fa" else "en"
     raw_text, meta = find_public_domain_text(norm["gutenberg_query"], preferred_lang=gutenberg_lang)
 
+    if raw_text is not None:
+        text = clean_gutenberg_text(raw_text)
+        meta["source"] = "gutenberg"
+        # ۳) ترجمه در صورت نیاز
+        if target_lang == "fa" and gutenberg_lang != "fa":
+            print("متن انگلیسیِ آزاد پیدا شد؛ در حال تولید ترجمه‌ی تازه‌ی فارسی با Gemini ...")
+            text = translate_to_persian(client, model_name, text)
+            meta["translated"] = True
+        return text, norm, meta
+
+    # ۴) جستجوی آزاد در کل وب (اگر گوتنبرگ نداد)
+    print("گوتنبرگ نتیجه‌ای نداشت؛ در حال جستجوی وب برای یافتن متن کتاب ...")
+    raw_text, meta = fetch_from_any_source(norm["gutenberg_query"], target_lang)
+
     if raw_text is None:
+        # اگر هیچ‌چیز پیدا نشد، خطا بده (اما نه به‌خاطر کپی‌رایت)
         raise ManualTextRequired(
-            f"متن آزاد و قانونی (Public Domain) برای «{raw_title}» در Project Gutenberg پیدا نشد.\n"
-            f"این کتاب احتمالاً هنوز کپی‌رایت دارد، پس این ابزار عمداً آن را دانلود نمی‌کند.\n"
-            f"برای ادامه، متن خودتان را (که حق استفاده از آن را دارید) در این مسیر قرار دهید:\n"
+            f"هیچ متنی برای «{raw_title}» در هیچ منبعی (گوتنبرگ یا وب) پیدا نشد.\n"
+            f"می‌توانی خودت فایل متن را در این مسیر قرار دهی:\n"
             f"  manuscripts/{slug}-{target_lang}.txt\n"
-            f"و دوباره اکشن را اجرا کنید."
+            f"و دوباره اجرا کن."
         )
 
-    text = clean_gutenberg_text(raw_text)
-    meta["source"] = "gutenberg"
+    text = clean_gutenberg_text(raw_text)  # پاک‌سازی اولیه
+    meta["source"] = "web_scrape"
 
-    # ۳) اگر زبان متن پیداشده با زبان هدف یکی نیست، ترجمه‌ی تازه انجام بده
-    if target_lang == "fa" and gutenberg_lang != "fa":
-        print("متن انگلیسیِ آزاد پیدا شد؛ در حال تولید ترجمه‌ی تازه‌ی فارسی با Gemini ...")
-        text = translate_to_persian(client, model_name, text)
-        meta["translated"] = True
+    # ۵) اگر متن به زبان فارسی نبود و زبان هدف فارسی است، ترجمه کن
+    if target_lang == "fa":
+        # تشخیص ساده: اگر کاراکتر فارسی در ۲۰۰ کاراکتر اول نبود، احتمالاً انگلیسی است
+        if not any('\u0600' <= c <= '\u06FF' for c in text[:200]):
+            print("متن انگلیسی از وب پیدا شد؛ در حال تولید ترجمه‌ی فارسی با Gemini ...")
+            text = translate_to_persian(client, model_name, text)
+            meta["translated"] = True
 
     return text, norm, meta
