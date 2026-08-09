@@ -11,8 +11,10 @@ import json
 import random
 import re
 
+from google.genai import types
+
 TEXT_MODEL = "gemini-2.5-flash"
-IMAGE_MODEL = "gemini-2.5-flash-image"
+IMAGE_MODEL = "gemini-2.0-flash-preview-image-generation"
 
 CHARS_PER_PAGE = 950  # با فونت بزرگ‌شده و صفحه‌ی عمودی
 MIN_PAGES_PER_IMAGE = 6
@@ -105,7 +107,13 @@ def analyze_chunk(client, chunk: str, lang: str) -> dict:
 
 def generate_image(client, prompt: str, out_path):
     full_prompt = prompt + IMAGE_STYLE_SUFFIX
-    resp = client.models.generate_content(model=IMAGE_MODEL, contents=full_prompt)
+    resp = client.models.generate_content(
+        model=IMAGE_MODEL,
+        contents=full_prompt,
+        config=types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+        ),
+    )
     for part in resp.candidates[0].content.parts:
         if part.inline_data is not None:
             out_path.write_bytes(part.inline_data.data)
