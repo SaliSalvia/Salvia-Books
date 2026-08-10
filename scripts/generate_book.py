@@ -45,7 +45,7 @@ def main():
     print(f"== مرحله ۱: پیدا کردن متن برای «{args.title}» (زبان خروجی: {args.lang}) ==")
     try:
         text, norm, meta = get_source_text(
-            client, "gemini-2.5-flash", args.title, args.lang, manuscripts_dir
+            client, "gemini-3.6-flash", args.title, args.lang, manuscripts_dir
         )
     except ManualTextRequired as e:
         print("\n❌ " + str(e), file=sys.stderr)
