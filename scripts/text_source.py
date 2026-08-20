@@ -97,7 +97,9 @@ def find_public_domain_text(gutenberg_query: str, preferred_lang: str = None):
     امتحان می‌کند (معمولاً متن انگلیسی/اصلی پیدا می‌شود).
     خروجی: (raw_text, meta_dict) یا (None, None)
     """
-    for lang in filter(None, [preferred_lang, None]):
+    search_languages = [preferred_lang] if preferred_lang else []
+    search_languages.append(None)
+    for lang in search_languages:
         try:
             results = gutendex_search(gutenberg_query, lang)
         except requests.RequestException:
@@ -116,6 +118,7 @@ def find_public_domain_text(gutenberg_query: str, preferred_lang: str = None):
                 "authors": [a.get("name") for a in book.get("authors", [])],
                 "gutenberg_id": book.get("id"),
                 "source_url": url,
+                "language": lang,
             }
     return None, None
 
@@ -342,8 +345,8 @@ def get_source_text(client, model_name: str, raw_title: str, target_lang: str, m
         text = clean_gutenberg_text(raw_text)
         meta["source"] = "gutenberg"
         # ۳) ترجمه در صورت نیاز
-        if target_lang == "fa" and gutenberg_lang != "fa":
-            print("متن انگلیسیِ آزاد پیدا شد؛ در حال تولید ترجمه‌ی تازه‌ی فارسی با Gemini ...")
+        if target_lang == "fa" and not any('\u0600' <= c <= '\u06FF' for c in text[:1000]):
+            print("متن غیرفارسیِ آزاد پیدا شد؛ در حال تولید ترجمه‌ی تازه‌ی فارسی با Gemini ...")
             text = translate_to_persian(client, model_name, text)
             meta["translated"] = True
         return text, norm, meta
