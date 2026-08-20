@@ -13,7 +13,7 @@ import re
 
 from google.genai import types
 
-TEXT_MODEL = "gemini-3.6-flash"
+TEXT_MODEL = "gemini-3.7-flash"
 IMAGE_MODEL = "gemini-2.5-flash-image"
 
 CHARS_PER_PAGE = 950  # با فونت بزرگ‌شده و صفحه‌ی عمودی
