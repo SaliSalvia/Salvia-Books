@@ -33,6 +33,31 @@ def slugify(text: str) -> str:
     return text or "book"
 
 
+def _manual_text_candidates(manuscripts_dir: Path, slugs, target_lang: str):
+    """Return existing manual manuscript candidates for likely title slugs."""
+    seen = set()
+    candidates = []
+    for slug in slugs:
+        if not slug:
+            continue
+        for path in (
+            manuscripts_dir / f"{slug}-{target_lang}.txt",
+            manuscripts_dir / f"{slug}.txt",
+        ):
+            if path in seen:
+                continue
+            seen.add(path)
+            if path.exists():
+                candidates.append(path)
+    return candidates
+
+
+def _single_manual_text_fallback(manuscripts_dir: Path, target_lang: str):
+    """Use the only language-specific manuscript as a safe fallback for small repos."""
+    matches = sorted(manuscripts_dir.glob(f"*-{target_lang}.txt"))
+    return matches[0] if len(matches) == 1 else None
+
+
 # ---------------------------------------------------------------------------
 # مرحله‌ی ۱: شناخت عنوان (هر زبانی که کاربر وارد کرده) با Gemini
 # ---------------------------------------------------------------------------
@@ -97,7 +122,9 @@ def find_public_domain_text(gutenberg_query: str, preferred_lang: str = None):
     امتحان می‌کند (معمولاً متن انگلیسی/اصلی پیدا می‌شود).
     خروجی: (raw_text, meta_dict) یا (None, None)
     """
-    for lang in filter(None, [preferred_lang, None]):
+    search_languages = [preferred_lang] if preferred_lang else []
+    search_languages.append(None)
+    for lang in search_languages:
         try:
             results = gutendex_search(gutenberg_query, lang)
         except requests.RequestException:
@@ -116,6 +143,7 @@ def find_public_domain_text(gutenberg_query: str, preferred_lang: str = None):
                 "authors": [a.get("name") for a in book.get("authors", [])],
                 "gutenberg_id": book.get("id"),
                 "source_url": url,
+                "language": lang,
             }
     return None, None
 
@@ -322,33 +350,52 @@ def get_source_text(client, model_name: str, raw_title: str, target_lang: str, m
     اولویت با فایل دستی کاربر در manuscripts/ است؛ سپس گوتنبرگ؛ و در نهایت
     جستجوی آزاد در وب.
     """
+    # ۱) فایل دستی کاربر با عنوان خام، قبل از وابستگی به نرمال‌سازی Gemini
+    raw_slug = slugify(raw_title)
+    raw_candidates = _manual_text_candidates(manuscripts_dir, [raw_slug], target_lang)
+    if raw_candidates:
+        candidate = raw_candidates[0]
+        norm = {
+            "title_en": raw_title,
+            "title_fa": raw_title,
+            "author": "",
+            "gutenberg_query": raw_title,
+        }
+        print(f"استفاده از متن دستی: {candidate}")
+        return candidate.read_text(encoding="utf-8"), norm, {"source": "manual", "path": str(candidate)}
+
     norm = normalize_title(client, model_name, raw_title)
     slug = slugify(norm.get("title_en") or raw_title)
 
-    # ۱) فایل دستی کاربر
-    for candidate in [
-        manuscripts_dir / f"{slug}-{target_lang}.txt",
-        manuscripts_dir / f"{slug}.txt",
-    ]:
-        if candidate.exists():
-            print(f"استفاده از متن دستی: {candidate}")
-            return candidate.read_text(encoding="utf-8"), norm, {"source": "manual", "path": str(candidate)}
+    # ۲) فایل دستی کاربر با همه‌ی نام‌های نرمال‌شده‌ی محتمل
+    normalized_slugs = [
+        slug,
+        slugify(norm.get("title_en") or ""),
+        slugify(norm.get("title_fa") or ""),
+        slugify(norm.get("gutenberg_query") or ""),
+    ]
+    manual_candidates = _manual_text_candidates(manuscripts_dir, normalized_slugs, target_lang)
+    fallback_candidate = None if manual_candidates else _single_manual_text_fallback(manuscripts_dir, target_lang)
+    if manual_candidates or fallback_candidate:
+        candidate = manual_candidates[0] if manual_candidates else fallback_candidate
+        print(f"استفاده از متن دستی: {candidate}")
+        return candidate.read_text(encoding="utf-8"), norm, {"source": "manual", "path": str(candidate)}
 
-    # ۲) جست‌وجوی گوتنبرگ (آثار عمومی)
+    # ۳) جست‌وجوی گوتنبرگ (آثار عمومی)
     gutenberg_lang = "fa" if target_lang == "fa" else "en"
     raw_text, meta = find_public_domain_text(norm["gutenberg_query"], preferred_lang=gutenberg_lang)
 
     if raw_text is not None:
         text = clean_gutenberg_text(raw_text)
         meta["source"] = "gutenberg"
-        # ۳) ترجمه در صورت نیاز
-        if target_lang == "fa" and gutenberg_lang != "fa":
-            print("متن انگلیسیِ آزاد پیدا شد؛ در حال تولید ترجمه‌ی تازه‌ی فارسی با Gemini ...")
+        # ۴) ترجمه در صورت نیاز
+        if target_lang == "fa" and not any('\u0600' <= c <= '\u06FF' for c in text[:1000]):
+            print("متن غیرفارسیِ آزاد پیدا شد؛ در حال تولید ترجمه‌ی تازه‌ی فارسی با Gemini ...")
             text = translate_to_persian(client, model_name, text)
             meta["translated"] = True
         return text, norm, meta
 
-    # ۴) جستجوی آزاد در کل وب (اگر گوتنبرگ نداد)
+    # ۵) جستجوی آزاد در کل وب (اگر گوتنبرگ نداد)
     print("گوتنبرگ نتیجه‌ای نداشت؛ در حال جستجوی وب برای یافتن متن کتاب ...")
     raw_text, meta = fetch_from_any_source(norm["gutenberg_query"], target_lang)
 
@@ -364,7 +411,7 @@ def get_source_text(client, model_name: str, raw_title: str, target_lang: str, m
     text = clean_gutenberg_text(raw_text)  # پاک‌سازی اولیه
     meta["source"] = "web_scrape"
 
-    # ۵) اگر متن به زبان فارسی نبود و زبان هدف فارسی است، ترجمه کن
+    # ۶) اگر متن به زبان فارسی نبود و زبان هدف فارسی است، ترجمه کن
     if target_lang == "fa":
         # تشخیص ساده: اگر کاراکتر فارسی در ۲۰۰ کاراکتر اول نبود، احتمالاً انگلیسی است
         if not any('\u0600' <= c <= '\u06FF' for c in text[:200]):
