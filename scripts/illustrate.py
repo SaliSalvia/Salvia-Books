@@ -13,8 +13,13 @@ import re
 
 from google.genai import types
 
-TEXT_MODEL = "gemini-3.7-flash"
-IMAGE_MODEL = "gemini-2.5-flash-image"
+# Keep the text model on a generally available Gemini model. A bad model name
+# fails on the very first API request and makes the whole workflow look as if it
+# never started. This can be overridden from the workflow without changing code.
+import os
+
+TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
 
 CHARS_PER_PAGE = 950  # با فونت بزرگ‌شده و صفحه‌ی عمودی
 MIN_PAGES_PER_IMAGE = 6
