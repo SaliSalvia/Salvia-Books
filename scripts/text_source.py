@@ -330,15 +330,21 @@ def get_source_text(client, model_name: str, raw_title: str, target_lang: str, m
     """
     norm = normalize_title(client, model_name, raw_title)
     slug = slugify(norm.get("title_en") or raw_title)
+    raw_slug = slugify(raw_title)
 
-    # ۱) فایل دستی کاربر
-    for candidate in [
-        manuscripts_dir / f"{slug}-{target_lang}.txt",
-        manuscripts_dir / f"{slug}.txt",
-    ]:
-        if candidate.exists():
-            print(f"استفاده از متن دستی: {candidate}")
-            return candidate.read_text(encoding="utf-8"), norm, {"source": "manual", "path": str(candidate)}
+    # ۱) فایل دستی کاربر. Try the raw input too: title normalization can
+    # legitimately change punctuation or transliteration and hide an existing file.
+    candidate_slugs = list(dict.fromkeys([slug, raw_slug]))
+    for candidate_slug in candidate_slugs:
+        for candidate in [
+            manuscripts_dir / f"{candidate_slug}-{target_lang}.txt",
+            manuscripts_dir / f"{candidate_slug}.txt",
+        ]:
+            if candidate.exists():
+                content = candidate.read_text(encoding="utf-8").strip()
+                if content:
+                    print(f"استفاده از متن دستی: {candidate}")
+                    return content, norm, {"source": "manual", "path": str(candidate)}
 
     # ۲) جست‌وجوی گوتنبرگ (آثار عمومی)
     gutenberg_lang = "fa" if target_lang == "fa" else "en"

@@ -197,13 +197,16 @@ def html_to_pdf(html_path: Path, pdf_path: Path):
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
-        page.goto(html_path.as_uri(), wait_until="load")
-        page.wait_for_timeout(1000)
-        page.pdf(
-            path=str(pdf_path),
-            width="794px", height="1123px",
-            print_background=True,
-            margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
-        )
-        browser.close()
+        try:
+            page = browser.new_page()
+            page.goto(html_path.as_uri(), wait_until="load")
+            page.wait_for_timeout(1000)
+            page.evaluate("document.fonts && document.fonts.ready")
+            page.pdf(
+                path=str(pdf_path),
+                width="794px", height="1123px",
+                print_background=True,
+                margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
+            )
+        finally:
+            browser.close()

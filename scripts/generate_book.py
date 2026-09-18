@@ -69,7 +69,10 @@ def main():
     print(f"تعداد بخش‌ها/تصاویر: {len(sections)}")
 
     print("== مرحله ۴: ساخت HTML و PDF ==")
-    logo_uri = Path(args.logo).resolve().as_uri()
+    logo_path = Path(args.logo).resolve()
+    if not logo_path.is_file():
+        raise FileNotFoundError(f"Logo file not found: {logo_path}")
+    logo_uri = logo_path.as_uri()
     html_path = workdir / "book.html"
     render_book_html(
         lang=args.lang, title=title_display, author=author, blurb=blurb,
