@@ -34,6 +34,11 @@ def main():
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "output"))
     args = parser.parse_args()
 
+    if not args.api_key.strip():
+        parser.error("--api-key cannot be empty")
+    if not args.title.strip():
+        parser.error("--title cannot be empty")
+
     client = genai.Client(api_key=args.api_key)
 
     workdir = REPO_ROOT / "_build" / slugify(args.title)
@@ -64,7 +69,10 @@ def main():
     print(f"تعداد بخش‌ها/تصاویر: {len(sections)}")
 
     print("== مرحله ۴: ساخت HTML و PDF ==")
-    logo_uri = Path(args.logo).resolve().as_uri()
+    logo_path = Path(args.logo).resolve()
+    if not logo_path.is_file():
+        raise FileNotFoundError(f"Logo file not found: {logo_path}")
+    logo_uri = logo_path.as_uri()
     html_path = workdir / "book.html"
     render_book_html(
         lang=args.lang, title=title_display, author=author, blurb=blurb,

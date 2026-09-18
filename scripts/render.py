@@ -6,6 +6,7 @@ render.py
 همه‌ی صفحات میانی) و تبدیل آن به PDF با Playwright (کرومیوم headless).
 """
 
+from html import escape
 from pathlib import Path
 
 FONT_IMPORT = (
@@ -83,6 +84,27 @@ def _footer_html(page_num, logo_uri):
     """
 
 
+def _paginate_paragraphs(paragraphs, max_chars=750):
+    # Split paragraphs into pages so CSS cannot silently clip text.
+    pages = []
+    current = []
+    current_len = 0
+    for paragraph in paragraphs:
+        paragraph = str(paragraph).strip()
+        if not paragraph:
+            continue
+        pieces = [paragraph[i:i + max_chars] for i in range(0, len(paragraph), max_chars)]
+        for piece in pieces:
+            if current and current_len + len(piece) > max_chars:
+                pages.append(current)
+                current, current_len = [], 0
+            current.append(piece)
+            current_len += len(piece)
+    if current:
+        pages.append(current)
+    return pages or [[]]
+
+
 def render_book_html(*, lang: str, title: str, author: str, blurb: str,
                       sections: list, logo_uri: str, github_url: str,
                       out_html_path: Path):
@@ -91,97 +113,100 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
     kicker_top = "A CURATORIAL VISUAL EDITION" if lang == "en" else "یک نسخه‌ی کیوریتوریِ تصویری"
     label_by = "طراحی و ساخت" if lang == "fa" else "Designed & built by"
     colophon_title = "About this edition" if lang == "en" else "درباره‌ی این نسخه"
-    colophon_body_fa = (
+    colophon_body = (
         "این نسخه با کمک هوش مصنوعی (تحلیل متن، تصویرسازی و صفحه‌آرایی خودکار) "
-        "به‌صورت غیرانتفاعی و صرفاً برای بازخوانیِ بصریِ اثر ساخته شده است."
-    )
-    colophon_body_en = (
+        "به‌صورت غیرانتفاعی و صرفاً برای بازخوانیِ بصریِ اثر ساخته شده."
+        if lang == "fa" else
         "This edition was generated with the help of AI (automated text analysis, "
         "illustration, and layout) as a non-commercial visual companion to the original work."
     )
-    colophon_body = colophon_body_fa if lang == "fa" else colophon_body_en
 
-    parts = [f"""<!DOCTYPE html>
-<html lang="{lang}" dir="{dir_attr}">
+    safe_logo = escape(str(logo_uri), quote=True)
+    parts = [f'''<!DOCTYPE html>
+<html lang="{escape(lang, quote=True)}" dir="{dir_attr}">
 <head><meta charset="UTF-8"><style>
 {FONT_IMPORT}
 :root {{ --font: {font_var}; }}
 {CSS}
 </style></head><body>
-"""]
+''']
 
-    # جلد
-    parts.append(f"""
+    parts.append(f'''
     <div class="page cover" dir="{dir_attr}">
-      <div class="kicker">{kicker_top}</div>
-      <h1>{title}</h1>
-      <div class="blurb">{blurb}</div>
+      <div class="kicker">{escape(kicker_top)}</div>
+      <h1>{escape(title)}</h1>
+      <div class="blurb">{escape(blurb)}</div>
       <div class="credit">
-        <img src="{logo_uri}">
-        <div>{label_by}: <b>@SaliSalvia</b></div>
+        <img src="{safe_logo}">
+        <div>{escape(label_by)}: <b>@SaliSalvia</b></div>
       </div>
     </div>
-    """)
+    ''')
 
     page_num = 2
-    total = len(sections)
     for idx, sec in enumerate(sections, start=1):
-        text_html = "".join(f"<p>{p}</p>" for p in sec["paragraphs"])
-        parts.append(f"""
-        <div class="page text-page" dir="{dir_attr}">
-          <div class="title-wrap">
-            <div class="kicker">{sec.get('chapter_kicker','')}</div>
-            <h2>{sec.get('chapter_title','')}</h2>
-          </div>
-          {text_html}
-          {_footer_html(page_num, logo_uri)}
-        </div>
-        """)
-        page_num += 1
+        title_text = escape(str(sec.get('chapter_title', '') or f'Plate {idx}'))
+        kicker = escape(str(sec.get('chapter_kicker', '') or f'PLATE {idx}'))
+        text_pages = _paginate_paragraphs(sec.get("paragraphs", []))
+        for text_idx, page_paragraphs in enumerate(text_pages):
+            text_html = "".join(f"<p>{escape(str(p))}</p>" for p in page_paragraphs)
+            heading = f'''<div class="title-wrap">
+              <div class="kicker">{kicker}</div>
+              <h2>{title_text}</h2>
+            </div>''' if text_idx == 0 else ""
+            parts.append(f'''
+            <div class="page text-page" dir="{dir_attr}">
+              {heading}
+              {text_html}
+              {_footer_html(page_num, safe_logo)}
+            </div>
+            ''')
+            page_num += 1
 
         if sec.get("image_path"):
-            img_uri = Path(sec["image_path"]).resolve().as_uri()
-            parts.append(f"""
+            img_uri = escape(Path(sec["image_path"]).resolve().as_uri(), quote=True)
+            caption = escape(str(sec.get('caption', '') or ''))
+            parts.append(f'''
             <div class="page image-page" dir="{dir_attr}">
               <img class="img-half" src="{img_uri}">
               <div class="caption-half">
-                <div class="kicker">{sec.get('chapter_kicker','')}</div>
-                <h3>{sec.get('chapter_title','')}</h3>
-                <p>{sec.get('caption','')}</p>
+                <div class="kicker">{kicker}</div>
+                <h3>{title_text}</h3>
+                <p>{caption}</p>
               </div>
-              {_footer_html(page_num, logo_uri)}
+              {_footer_html(page_num, safe_logo)}
             </div>
-            """)
+            ''')
             page_num += 1
 
-    # پشت‌جلد / کولوفون
-    parts.append(f"""
+    parts.append(f'''
     <div class="page backcover" dir="{dir_attr}">
-      <div class="kicker">{colophon_title}</div>
-      <div class="note">{colophon_body}</div>
+      <div class="kicker">{escape(colophon_title)}</div>
+      <div class="note">{escape(colophon_body)}</div>
       <div class="credit">
-        <img src="{logo_uri}">
-        <div>{label_by}: <b>@SaliSalvia</b></div>
-        <div class="github">{github_url}</div>
+        <img src="{safe_logo}">
+        <div>{escape(label_by)}: <b>@SaliSalvia</b></div>
+        <div class="github">{escape(github_url)}</div>
       </div>
     </div>
-    """)
-
+    ''')
     parts.append("</body></html>")
     out_html_path.write_text("".join(parts), encoding="utf-8")
-
 
 def html_to_pdf(html_path: Path, pdf_path: Path):
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
-        page.goto(html_path.as_uri())
-        page.wait_for_timeout(500)
-        page.pdf(
-            path=str(pdf_path),
-            width="794px", height="1123px",
-            print_background=True,
-            margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
-        )
-        browser.close()
+        try:
+            page = browser.new_page()
+            page.goto(html_path.as_uri(), wait_until="load")
+            page.wait_for_timeout(1000)
+            page.evaluate("document.fonts && document.fonts.ready")
+            page.pdf(
+                path=str(pdf_path),
+                width="794px", height="1123px",
+                print_background=True,
+                margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
+            )
+        finally:
+            browser.close()

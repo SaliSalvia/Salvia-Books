@@ -40,10 +40,13 @@ jobs:
         working-directory: scripts
         env:
           GEMINI_KEY: ${{ inputs.gemini_api_key != '' && inputs.gemini_api_key || secrets.GEMINI_API_KEY }}
+          BOOK_NAME: ${{ inputs.book_name }}
         run: |
+          test -n "$GEMINI_KEY" || { echo "GEMINI_API_KEY is empty. Add the repository secret or enter the workflow input."; exit 1; }
+          test -n "$BOOK_NAME" || { echo "Book name is empty."; exit 1; }
           python generate_book.py \
             --lang en \
-            --title "${{ inputs.book_name }}" \
+            --title "$BOOK_NAME" \
             --api-key "$GEMINI_KEY" \
             --github-url "https://github.com/${{ github.repository }}"
 
