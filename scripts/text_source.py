@@ -56,7 +56,8 @@ TITLE_NORMALIZE_PROMPT = """
 def normalize_title(client, model_name: str, raw_title: str) -> dict:
     prompt = TITLE_NORMALIZE_PROMPT.replace("{raw_title}", raw_title)
     resp = client.models.generate_content(model=model_name, contents=prompt)
-    raw = re.sub(r"^```(json)?|```$", "", resp.text.strip(), flags=re.MULTILINE).strip()
+    response_text = getattr(resp, "text", "") or ""
+    raw = re.sub(r"^```(json)?|```$", "", response_text.strip(), flags=re.MULTILINE).strip()
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -265,7 +266,9 @@ def fetch_from_any_source(query: str, target_lang: str = None) -> tuple:
                             except ImportError:
                                 pass  # pypdf نصب نیست
 
-                        extracted_text = re.sub(r'\s+', ' ', extracted_text).strip()
+                        # Preserve paragraph boundaries for downstream pagination.
+                        extracted_text = re.sub(r'[ \t]+', ' ', extracted_text)
+                        extracted_text = re.sub(r'\n{3,}', '\n\n', extracted_text).strip()
 
                         if len(extracted_text) > 1500:
                             print(f"متن کتاب از آدرس زیر پیدا و استخراج شد: {href}")
@@ -310,7 +313,7 @@ def translate_to_persian(client, model_name: str, text: str, chunk_chars: int = 
     for i, chunk in enumerate(chunks, 1):
         prompt = TRANSLATE_PROMPT.replace("{chunk}", chunk)
         resp = client.models.generate_content(model=model_name, contents=prompt)
-        translated_parts.append(resp.text.strip())
+        translated_parts.append((getattr(resp, "text", "") or "").strip())
         print(f"  ترجمه بخش {i}/{len(chunks)} انجام شد")
     return "\n\n".join(translated_parts)
 

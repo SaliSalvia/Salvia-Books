@@ -8,6 +8,7 @@ illustrate.py
 """
 
 import json
+import os
 import random
 import re
 
@@ -16,8 +17,6 @@ from google.genai import types
 # Keep the text model on a generally available Gemini model. A bad model name
 # fails on the very first API request and makes the whole workflow look as if it
 # never started. This can be overridden from the workflow without changing code.
-import os
-
 TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
 IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
 
@@ -92,22 +91,26 @@ def generate_blurb(client, title: str, author: str, sample_text: str, lang: str)
         sample=sample_text[:1500],
     )
     resp = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
-    return resp.text.strip().strip('"').strip("«»")
+    return (getattr(resp, "text", "") or "").strip().strip('"').strip("«»")
 
 
 def analyze_chunk(client, chunk: str, lang: str) -> dict:
     prompt = ANALYSIS_PROMPT.format(lang_name=_lang_name(lang), chunk=chunk[:6000])
     resp = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
-    raw = re.sub(r"^```(json)?|```$", "", resp.text.strip(), flags=re.MULTILINE).strip()
+    response_text = getattr(resp, "text", "") or ""
+    raw = re.sub(r"^```(json)?|```$", "", response_text.strip(), flags=re.MULTILINE).strip()
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {
-            "chapter_title": "",
-            "chapter_kicker": "",
-            "caption": chunk[:200],
-            "image_prompt_en": f"An atmospheric literary illustration inspired by: {chunk[:300]}",
-        }
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return {
+        "chapter_title": str(data.get("chapter_title") or ""),
+        "chapter_kicker": str(data.get("chapter_kicker") or ""),
+        "caption": str(data.get("caption") or chunk[:200]),
+        "image_prompt_en": str(data.get("image_prompt_en") or f"An atmospheric literary illustration inspired by: {chunk[:300]}"),
+    }
 
 
 def generate_image(client, prompt: str, out_path):
@@ -116,11 +119,14 @@ def generate_image(client, prompt: str, out_path):
         model=IMAGE_MODEL,
         contents=full_prompt,
         config=types.GenerateContentConfig(
-            response_modalities=["IMAGE"],
+            response_modalities=["TEXT", "IMAGE"],
         ),
     )
-    for part in resp.candidates[0].content.parts:
-        if part.inline_data is not None:
+    candidates = getattr(resp, "candidates", None) or []
+    if not candidates or not getattr(candidates[0], "content", None):
+        return False
+    for part in getattr(candidates[0].content, "parts", []) or []:
+        if getattr(part, "inline_data", None) is not None:
             out_path.write_bytes(part.inline_data.data)
             return True
     return False
@@ -136,7 +142,13 @@ def build_sections(client, full_text: str, lang: str, img_dir):
 
         img_path = img_dir / f"scene_{i:02d}.png"
         print(f"[{i}/{len(chunks)}] تولید تصویر ...")
-        ok = generate_image(client, meta.get("image_prompt_en", ""), img_path)
+        try:
+            ok = generate_image(client, meta.get("image_prompt_en", ""), img_path)
+        except Exception as exc:
+            # An image quota/model failure should not destroy an otherwise valid
+            # text book. The PDF can still be produced without this plate.
+            print(f"هشدار: تصویر بخش {i} ساخته نشد: {exc}")
+            ok = False
 
         sections.append({
             "paragraphs": split_into_paragraphs(chunk),

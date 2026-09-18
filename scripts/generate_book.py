@@ -34,6 +34,11 @@ def main():
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "output"))
     args = parser.parse_args()
 
+    if not args.api_key.strip():
+        parser.error("--api-key cannot be empty")
+    if not args.title.strip():
+        parser.error("--title cannot be empty")
+
     client = genai.Client(api_key=args.api_key)
 
     workdir = REPO_ROOT / "_build" / slugify(args.title)
