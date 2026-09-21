@@ -57,19 +57,39 @@ jobs:
           BOOK_TEXT: ${{ inputs.book_text }}
         run: printf '%s' "$BOOK_TEXT" > "$RUNNER_TEMP/book.txt"
 
+      - name: Validate Gemini API key
+        env:
+          GEMINI_KEY: ${{ inputs.gemini_api_key != '' && inputs.gemini_api_key || secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_KEY" ]; then
+            echo "::error title=Gemini API key is missing::کلید را در فرم وارد کنید یا secret با نام GEMINI_API_KEY بسازید."
+            exit 1
+          fi
+
       - name: Generate illustrated book
         env:
           GEMINI_KEY: ${{ inputs.gemini_api_key != '' && inputs.gemini_api_key || secrets.GEMINI_API_KEY }}
           BOOK_TITLE: ${{ inputs.book_name }}
           BOOK_AUTHOR: ${{ inputs.author }}
         run: |
+          set +e
           python scripts/generate_book.py \
             --lang "${{ inputs.language }}" \
             --title "$BOOK_TITLE" \
             --author "$BOOK_AUTHOR" \
             --text-file "$RUNNER_TEMP/book.txt" \
             --api-key "$GEMINI_KEY" \
-            --github-url "https://github.com/${{ github.repository }}"
+            --github-url "https://github.com/${{ github.repository }}" \
+            2>&1 | tee "$RUNNER_TEMP/generation.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            message=$(grep '^DIAGNOSTIC:' "$RUNNER_TEMP/generation.log" | tail -1 | sed 's/^DIAGNOSTIC: //')
+            if [ -z "$message" ]; then
+              message="ساخت کتاب شکست خورد؛ جزئیات کامل در لاگ مرحله Generate illustrated book موجود است."
+            fi
+            echo "::error title=Illustrated book generation failed::$message"
+            exit "$status"
+          fi
 
       - name: Upload PDF artifact
         uses: actions/upload-artifact@v4

@@ -24,6 +24,21 @@ from render import render_book_html, html_to_pdf
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _api_error_hint(exc: Exception) -> str:
+    message = str(exc).lower()
+    if any(token in message for token in ("api key", "api_key", "unauthenticated", "401", "403", "permission denied")):
+        return "کلید Gemini نامعتبر است، منقضی شده، یا اجازه‌ی استفاده از مدل را ندارد."
+    if any(token in message for token in ("quota", "resource_exhausted", "rate limit", "429", "billing")):
+        return "سهمیه یا اعتبار Gemini تمام شده است؛ سهمیه‌ی متن و تصویر و وضعیت Billing را بررسی کنید."
+    if any(token in message for token in ("not found", "404", "model")):
+        return "مدل در حساب یا منطقه‌ی شما در دسترس نیست؛ دسترسی مدل‌های متنی و تصویری را بررسی کنید."
+    if any(token in message for token in ("timeout", "connection", "network", "dns", "503", "unavailable")):
+        return "ارتباط با سرویس برقرار نشد؛ وضعیت شبکه یا سرویس Gemini را بررسی و دوباره اجرا کنید."
+    if any(token in message for token in ("safety", "blocked", "prohibited", "finish_reason")):
+        return "درخواست توسط فیلترهای ایمنی مدل مسدود شده است؛ متن یا پرامپت تصویر را بررسی کنید."
+    return "جزئیات فنی خطا را در ادامه‌ی لاگ همین مرحله بررسی کنید."
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--lang", choices=["fa", "en"], required=True)
@@ -98,4 +113,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        hint = _api_error_hint(exc)
+        print(f"DIAGNOSTIC: {hint}", file=sys.stderr)
+        print(f"TECHNICAL_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        sys.exit(1)

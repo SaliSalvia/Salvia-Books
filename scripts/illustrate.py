@@ -114,11 +114,16 @@ def generate_image(client, prompt: str, out_path):
             response_modalities=["IMAGE"],
         ),
     )
-    for part in resp.candidates[0].content.parts:
+    if not resp.candidates:
+        raise RuntimeError("Image API returned no candidates; the request may be blocked or image quota may be unavailable")
+    content = resp.candidates[0].content
+    if content is None or not content.parts:
+        raise RuntimeError("Image API returned no content; check model access, safety filters, and image quota")
+    for part in content.parts:
         if part.inline_data is not None:
             out_path.write_bytes(part.inline_data.data)
             return True
-    return False
+    raise RuntimeError("Image API returned no image data; check image-model access and quota")
 
 
 def build_sections(client, full_text: str, lang: str, img_dir):
