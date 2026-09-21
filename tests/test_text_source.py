@@ -24,18 +24,23 @@ class _Client:
     models = _Models()
 
 
-def test_get_source_text_uses_single_language_manual_fallback(tmp_path):
+def test_get_source_text_does_not_use_unrelated_manual_fallback(tmp_path, monkeypatch):
     manuscripts = tmp_path / "manuscripts"
     manuscripts.mkdir()
     manual = manuscripts / "the-little-prince-fa.txt"
     manual.write_text("متن دستی فارسی", encoding="utf-8")
+    monkeypatch.setattr(
+        text_source,
+        "find_public_domain_text",
+        lambda query, preferred_lang=None: ("متن کتاب درخواستی", {"title": "Le Petit Prince"}),
+    )
 
     text, _norm, meta = text_source.get_source_text(
         _Client(), "fake-model", "شازده کوچولو", "fa", manuscripts
     )
 
-    assert text == "متن دستی فارسی"
-    assert meta == {"source": "manual", "path": str(manual)}
+    assert text == "متن کتاب درخواستی"
+    assert meta["source"] == "gutenberg"
 
 
 def test_get_source_text_checks_raw_title_before_gemini(tmp_path):

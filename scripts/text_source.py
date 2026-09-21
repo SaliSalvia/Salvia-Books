@@ -52,12 +52,6 @@ def _manual_text_candidates(manuscripts_dir: Path, slugs, target_lang: str):
     return candidates
 
 
-def _single_manual_text_fallback(manuscripts_dir: Path, target_lang: str):
-    """Use the only language-specific manuscript as a safe fallback for small repos."""
-    matches = sorted(manuscripts_dir.glob(f"*-{target_lang}.txt"))
-    return matches[0] if len(matches) == 1 else None
-
-
 # ---------------------------------------------------------------------------
 # مرحله‌ی ۱: شناخت عنوان (هر زبانی که کاربر وارد کرده) با Gemini
 # ---------------------------------------------------------------------------
@@ -375,9 +369,8 @@ def get_source_text(client, model_name: str, raw_title: str, target_lang: str, m
         slugify(norm.get("gutenberg_query") or ""),
     ]
     manual_candidates = _manual_text_candidates(manuscripts_dir, normalized_slugs, target_lang)
-    fallback_candidate = None if manual_candidates else _single_manual_text_fallback(manuscripts_dir, target_lang)
-    if manual_candidates or fallback_candidate:
-        candidate = manual_candidates[0] if manual_candidates else fallback_candidate
+    if manual_candidates:
+        candidate = manual_candidates[0]
         print(f"استفاده از متن دستی: {candidate}")
         return candidate.read_text(encoding="utf-8"), norm, {"source": "manual", "path": str(candidate)}
 

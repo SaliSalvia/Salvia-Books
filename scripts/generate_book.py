@@ -28,6 +28,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--lang", choices=["fa", "en"], required=True)
     parser.add_argument("--title", required=True, help="نام کتاب (هر زبانی)")
+    parser.add_argument("--author", default="", help="نام نویسنده برای متن ورودی")
+    parser.add_argument("--text-file", help="مسیر فایل UTF-8 حاوی متن آماده‌ی کتاب")
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--github-url", default="https://github.com/")
     parser.add_argument("--logo", default=str(REPO_ROOT / "assets" / "logo.png"))
@@ -42,14 +44,28 @@ def main():
     manuscripts_dir = REPO_ROOT / "manuscripts"
     manuscripts_dir.mkdir(exist_ok=True)
 
-    print(f"== مرحله ۱: پیدا کردن متن برای «{args.title}» (زبان خروجی: {args.lang}) ==")
-    try:
-        text, norm, meta = get_source_text(
-            client, TEXT_MODEL, args.title, args.lang, manuscripts_dir
-        )
-    except ManualTextRequired as e:
-        print("\n❌ " + str(e), file=sys.stderr)
-        sys.exit(2)
+    if args.text_file:
+        text_path = Path(args.text_file)
+        text = text_path.read_text(encoding="utf-8").strip()
+        if not text:
+            parser.error("فایل متن خالی است")
+        norm = {
+            "title_en": args.title,
+            "title_fa": args.title,
+            "author": args.author,
+            "gutenberg_query": args.title,
+        }
+        meta = {"source": "provided_text", "path": str(text_path)}
+        print(f"== مرحله ۱: استفاده از متن آماده برای «{args.title}» (زبان خروجی: {args.lang}) ==")
+    else:
+        print(f"== مرحله ۱: پیدا کردن متن برای «{args.title}» (زبان خروجی: {args.lang}) ==")
+        try:
+            text, norm, meta = get_source_text(
+                client, TEXT_MODEL, args.title, args.lang, manuscripts_dir
+            )
+        except ManualTextRequired as e:
+            print("\n❌ " + str(e), file=sys.stderr)
+            sys.exit(2)
 
     print(f"منبع متن: {meta}")
 

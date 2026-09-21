@@ -1,0 +1,79 @@
+name: "✍️ Build Illustrated Pasted Text"
+
+on:
+  workflow_dispatch:
+    inputs:
+      gemini_api_key:
+        description: "Google AI (Gemini) API key. Leave empty to use the GEMINI_API_KEY repository secret."
+        required: false
+        type: string
+      book_name:
+        description: "نام کتاب یا داستان"
+        required: true
+        type: string
+      author:
+        description: "نام نویسنده"
+        required: false
+        type: string
+      language:
+        description: "زبان متن و خروجی"
+        required: true
+        default: "fa"
+        type: choice
+        options:
+          - fa
+          - en
+      book_text:
+        description: "متن کامل کتاب یا داستان را اینجا وارد کنید"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mask API key in logs
+        if: ${{ inputs.gemini_api_key != '' }}
+        run: echo "::add-mask::${{ inputs.gemini_api_key }}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Install Playwright + Chromium
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Save submitted text
+        env:
+          BOOK_TEXT: ${{ inputs.book_text }}
+        run: printf '%s' "$BOOK_TEXT" > "$RUNNER_TEMP/book.txt"
+
+      - name: Generate illustrated book
+        env:
+          GEMINI_KEY: ${{ inputs.gemini_api_key != '' && inputs.gemini_api_key || secrets.GEMINI_API_KEY }}
+          BOOK_TITLE: ${{ inputs.book_name }}
+          BOOK_AUTHOR: ${{ inputs.author }}
+        run: |
+          python scripts/generate_book.py \
+            --lang "${{ inputs.language }}" \
+            --title "$BOOK_TITLE" \
+            --author "$BOOK_AUTHOR" \
+            --text-file "$RUNNER_TEMP/book.txt" \
+            --api-key "$GEMINI_KEY" \
+            --github-url "https://github.com/${{ github.repository }}"
+
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: illustrated-text-${{ inputs.language }}-${{ github.run_number }}
+          path: output/*.pdf
+          if-no-files-found: error
