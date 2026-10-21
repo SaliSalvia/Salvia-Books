@@ -1,0 +1,77 @@
+name: "📖 Build Book"
+
+# ورودی فقط دو چیز است: نام کتاب و (اختیاری) کلید API.
+# زبانِ خروجی خودکار از خودِ متن تشخیص داده می‌شود.
+on:
+  workflow_dispatch:
+    inputs:
+      book_name:
+        description: "نام کتاب (به هر زبانی — فارسی یا انگلیسی)"
+        required: true
+        type: string
+      gemini_api_key:
+        description: "کلید Google AI (Gemini). اگر خالی بماند از سکرت GEMINI_API_KEY خوانده می‌شود."
+        required: false
+        type: string
+
+# حداقل دسترسی: این ورک‌فلو فقط باید متن را بخواند و artifact بسازد.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Mask API key in logs
+        if: ${{ inputs.gemini_api_key != '' }}
+        run: echo "::add-mask::${{ inputs.gemini_api_key }}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Install Playwright + Chromium
+        run: playwright install --with-deps chromium
+
+      - name: Generate book
+        working-directory: scripts
+        env:
+          GEMINI_KEY: ${{ inputs.gemini_api_key != '' && inputs.gemini_api_key || secrets.GEMINI_API_KEY }}
+          GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL }}
+          GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL }}
+          BOOK_NAME: ${{ inputs.book_name }}
+        run: |
+          test -n "$GEMINI_KEY" || { echo "کلید API خالی است. سکرت GEMINI_API_KEY را بسازید یا فیلد ورودی را پر کنید."; exit 1; }
+          test -n "$BOOK_NAME" || { echo "نام کتاب خالی است."; exit 1; }
+          python generate_book.py \
+            --title "$BOOK_NAME" \
+            --api-key "$GEMINI_KEY" \
+            --github-url "https://github.com/${{ github.repository }}"
+
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: book-${{ github.run_number }}
+          path: output/*.pdf
+          if-no-files-found: error
+
+      - name: Upload build cache on failure (برای عیب‌یابی)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ github.run_number }}
+          path: |
+            _build/**/*.json
+            _build/**/*.html
+          if-no-files-found: ignore
+          retention-days: 7
