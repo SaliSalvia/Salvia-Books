@@ -16,11 +16,14 @@ render.py
 * متادیتای PDF (عنوان/نویسنده) و فهرستِ کنارِ PDF (bookmark) هم نوشته می‌شود.
 """
 
+import base64
 import re
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 
 FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+_FONT_FACE_RE = re.compile(r"@font-face\s*\{(.*?)\}", re.S)
 
 GOOGLE_FONTS_URL = (
     "https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;"
@@ -164,6 +167,9 @@ body { font-family: var(--font); color: #2b2410; }
 }
 [dir="ltr"] .text-page p { font-size: 24px; line-height: 1.9; }
 .text-page p + p { text-indent: 1.7em; }
+/* بدونِ این، فلکس‌باکس متنِ سرریز را به‌جای بیرون‌زدن، مچاله می‌کند
+   (ارتفاعِ پاراگراف‌ها ۰ می‌شود و شناساگرِ سرریز هیچ‌وقت هشدار نمی‌دهد) */
+.text-page > *:not(.footer) { flex: 0 0 auto; }
 
 /* ---------------- صفحات تصویری ---------------- */
 .image-page { background: #f4ecd8; display: flex; flex-direction: column; }
@@ -206,17 +212,55 @@ body { font-family: var(--font); color: #2b2410; }
 # فونت‌ها: نسخه‌ی محلی، و اگر نبود، Google Fonts
 # ---------------------------------------------------------------------------
 
-def _font_css() -> str:
-    """CSS فونت‌ها با نشانی‌های `file://` مطلق (HTML در _build/ است)."""
+@lru_cache(maxsize=1)
+def _local_font_files() -> tuple:
+    """
+    فهرستِ فونت‌های محلی از روی `assets/fonts/fonts.css`.
+
+    فونت‌ها به‌صورتِ `url('file://…')` داخلِ CSS در مرورگر لود **نمی‌شوند**
+    (کرومیوم فونتِ صفحه‌ی `file://` را بلاک می‌کند و صورتِ فونت با وضعیتِ
+    `error` می‌ماند)، پس در زمانِ چاپ با `FontFace` تزریق می‌شوند.
+    """
     css_path = FONT_DIR / "fonts.css"
-    if css_path.is_file():
-        css = css_path.read_text(encoding="utf-8")
-        for font_file in FONT_DIR.iterdir():
-            if font_file.suffix.lower() in (".ttf", ".otf", ".woff2", ".woff"):
-                css = css.replace(f"url('{font_file.name}')",
-                                  f'url("{font_file.resolve().as_uri()}")')
-        return css
-    # جایگزین: فونت‌های آنلاین (اگر assets/fonts در دسترس نبود)
+    if not css_path.is_file():
+        return ()
+    faces = []
+    for block in _FONT_FACE_RE.findall(css_path.read_text(encoding="utf-8")):
+        family = re.search(r"font-family:\s*['\"]?([^;'\"]+)['\"]?\s*;", block)
+        src = re.search(r"url\(\s*['\"]?([^'\")]+)['\"]?\s*\)", block)
+        if not family or not src:
+            continue
+        path = FONT_DIR / src.group(1).strip()
+        if not path.is_file():
+            continue
+        style = re.search(r"font-style:\s*([\w-]+)\s*;", block)
+        weight = re.search(r"font-weight:\s*(\d+)\s*;", block)
+        faces.append({
+            "family": family.group(1).strip(),
+            "style": style.group(1).strip() if style else "normal",
+            "weight": weight.group(1).strip() if weight else "400",
+            "path": path,
+        })
+    return tuple(faces)
+
+
+@lru_cache(maxsize=1)
+def _font_payload() -> tuple:
+    """همان فهرست، با بایت‌های base64 (یک‌بار خوانده می‌شود، نه در هر صفحه)."""
+    return tuple({
+        "family": f["family"], "style": f["style"], "weight": f["weight"],
+        "b64": base64.b64encode(f["path"].read_bytes()).decode("ascii"),
+    } for f in _local_font_files())
+
+
+def _font_css() -> str:
+    """
+    CSSِ فونت. اگر فونتِ محلی داریم، این‌جا چیزی لازم نیست (تزریق در چاپ)؛
+    وگرنه به Google Fonts تکیه می‌کنیم.
+    """
+    if _local_font_files():
+        return ("/* فونت‌های محلی هنگامِ ساختِ PDF از assets/fonts "
+                "تزریق می‌شوند. */")
     return f"@import url('{GOOGLE_FONTS_URL}');"
 
 
@@ -225,6 +269,23 @@ _FONT_SPECS = [
     "400 23px 'EB Garamond'", "600 36px 'EB Garamond'",
     "italic 400 20px 'EB Garamond'",
 ]
+
+# تزریقِ فونت‌ها داخلِ صفحه (بدونِ شبکه و بدونِ محدودیتِ file://)
+_FONT_JS = """
+async (defs) => {
+  for (const d of defs) {
+    const bin = atob(d.b64);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    const face = new FontFace(d.family, buf.buffer,
+                              {style: d.style, weight: d.weight, display: 'block'});
+    await face.load();
+    document.fonts.add(face);
+  }
+  await document.fonts.ready;
+  return document.fonts.size;
+}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -611,15 +672,20 @@ def html_to_pdf(html_path: Path, pdf_path: Path, *, metadata=None, outline=None)
             # منتظر فونت‌ها می‌مانیم؛ اگر لود نشده باشند، هشدار چاپ می‌شود
             # تا بی‌صدا PDF با فونت پیش‌فرض ساخته نشود.
             try:
-                page.evaluate(
-                    """async (specs) => {
-                        if (!document.fonts) return;
-                        await Promise.all(specs.map(s =>
-                            document.fonts.load(s).catch(() => null)));
-                        await document.fonts.ready;
-                    }""",
-                    _FONT_SPECS,
-                )
+                # فونت‌های محلی را به‌صورتِ FontFace تزریق می‌کنیم؛ بارگذاریِ
+                # `url(file://…)` از صفحه‌ی `file://` بلاک می‌شود.
+                if _font_payload():
+                    page.evaluate(_FONT_JS, list(_font_payload()))
+                else:
+                    page.evaluate(
+                        """async (specs) => {
+                            if (!document.fonts) return;
+                            await Promise.all(specs.map(s =>
+                                document.fonts.load(s).catch(() => null)));
+                            await document.fonts.ready;
+                        }""",
+                        _FONT_SPECS,
+                    )
                 for spec in ("700 23px Vazirmatn", "400 23px 'EB Garamond'"):
                     if not page.evaluate("s => document.fonts.check(s)", spec):
                         print(f"هشدار: فونت «{spec}» لود نشد؛ "
