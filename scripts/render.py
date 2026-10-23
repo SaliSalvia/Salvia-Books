@@ -13,7 +13,11 @@ render.py
 * بعد از ساختِ HTML، ارتفاعِ محتوای هر صفحه اندازه‌گیری می‌شود؛ اگر صفحه‌ای
   سرریز کرده باشد گزارش می‌شود تا صفحه‌بندی با سقفِ کمتر دوباره انجام شود
   (به‌جای بریده‌شدنِ بی‌صدای متن).
-* متادیتای PDF (عنوان/نویسنده) و فهرستِ کنارِ PDF (bookmark) هم نوشته می‌شود.
+* متادیتای PDF (عنوان/نویسنده/زبان) و فهرستِ کنارِ PDF (bookmark) هم نوشته می‌شود.
+* حاشیه‌آراییِ چاپی است: حاشیه‌ی شیرازه (inner) پهن‌تر است و بر اساسِ زوج/فرد
+  بودنِ صفحه («verso»/«recto») آینه می‌شود؛ صفحه‌ی آغازِ هر بخش سرصفحه ندارد و
+  سرصفحه‌ی بقیه‌ی صفحه‌ها نامِ کتاب (چپ) یا عنوانِ بخش (راست) است.
+* شماره‌ی صفحه و فهرست در کتابِ فارسی با ارقامِ فارسی چاپ می‌شوند.
 """
 
 import base64
@@ -31,16 +35,17 @@ GOOGLE_FONTS_URL = (
 )
 
 # صفحه‌بندی بر اساسِ «خط» است، نه نویسه: متنِ پرگفت‌وگو (پاراگراف‌های کوتاه)
-# در همان تعداد نویسه چند خط بیشتر می‌گیرد. این اعداد از اندازه‌گیریِ واقعیِ
-# چیدمان در کرومیوم به‌دست آمده‌اند (ارتفاعِ ۱۱۲۳px، حاشیه‌ی ۶۸/۱۰۴، سرصفحه).
-CHARS_PER_LINE = {"fa": 61, "en": 69}
+# نویسه‌ای است که در یک خطِ کاملِ چیدمانِ واقعیِ کرومیوم جا می‌شود (عرضِ
+# ستونِ ۶۴۸px، قلمِ ۲۲٫۵/۲۳٫۵px). این اعداد تجربی‌اند: با بالاتر بردنشان
+# صفحه‌ها پرتر می‌شوند ولی ریسکِ سرریز بالا می‌رود.
+CHARS_PER_LINE = {"fa": 63, "en": 67}
 
-# سقفِ خط در هر صفحه؛ صفحه‌ی آغازِ هر بخش (با عنوان و خطِ تزئینی) سه خط کمتر.
-LINE_CAPACITY = {"fa": 19, "en": 17}
-FIRST_PAGE_LINES_OFFSET = 3
+# سقفِ خط در هر صفحه؛ صفحه‌ی آغازِ هر بخش (با عنوان و خطِ تزئینی) چهار خط کمتر.
+LINE_CAPACITY = {"fa": 19, "en": 19}
+FIRST_PAGE_LINES_OFFSET = 4
 
 # اگر صفحه‌ای سرریز کرد، هر تلاشِ بعدی این‌قدر خط کمتر می‌گیرد.
-LINE_STEP_DOWN = 2
+LINE_STEP_DOWN = 1
 MAX_ATTEMPTS = 5
 
 # برای سازگاری با تست‌های صفحه‌بندی که هنوز بر حسبِ نویسه کار می‌کنند.
@@ -53,8 +58,11 @@ def line_cap_for(lang: str, attempt: int = 0) -> int:
     base = LINE_CAPACITY.get(lang, LINE_CAPACITY["en"])
     return max(6, base - LINE_STEP_DOWN * attempt)
 
-# چند ردیف فهرست در یک صفحه جا می‌شود (برای کتاب‌های چندبخشی→ چند صفحه فهرست)
-CONTENTS_ROWS_PER_PAGE = 13
+# چند ردیف فهرست در یک صفحه جا می‌شود. در کتاب‌های کم‌بخش (نسخه‌ی تصویری)
+# هر ردیف کپشن هم دارد و بلندتر است؛ در کتاب‌های پربخش فهرست جمع‌وجور می‌شود.
+CONTENTS_ROWS_PER_PAGE = 11
+CONTENTS_ROWS_DESCRIBED = 5
+CONTENTS_DESCRIBED_MAX_SECTIONS = 14
 
 PAGE_W, PAGE_H = 794, 1123
 
@@ -62,9 +70,24 @@ CSS = """
 @page { size: 794px 1123px; margin: 0; }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
-body { font-family: var(--font); color: #2b2410; }
+/* ---------------- توکن‌های طراحی ---------------- */
+:root {
+  --ink: #241d0e; --ink-soft: #4a3c1e; --paper: #f7f0de;
+  --gold: #b3893c; --gold-line: rgba(179,137,60,.24);
+  --outer: 62px; --inner: 84px;
+}
+body {
+  font-family: var(--font); color: var(--ink); background: var(--paper);
+  font-kerning: normal; font-variant-ligatures: common-ligatures;
+  text-rendering: optimizeLegibility;
+}
+/* ایتالیک فقط برای متنِ لاتین؛ فونتِ فارسی صورتِ موربِ واقعی ندارد و
+   موربِ مصنوعیِ مرورگر زشت است. */
+em { font-style: normal; }
+[dir="ltr"] em { font-style: italic; }
 .page {
   width: 794px; height: 1123px; position: relative; overflow: hidden;
+  background: var(--paper);
   page-break-after: always; break-after: page;
 }
 /* صفحه‌ی آخر نباید شکستِ اضافه بسازد (وگرنه PDF یک صفحه‌ی سفید می‌گیرد) */
@@ -74,137 +97,216 @@ body { font-family: var(--font); color: #2b2410; }
 
 /* ---------------- جلد و پشت‌جلد ---------------- */
 .cover, .backcover {
-  background: radial-gradient(ellipse at center, #2a2359 0%, #14122e 72%);
-  color: #e9dcb8; text-align: center;
+  background: radial-gradient(ellipse at 50% 36%, #2c255c 0%, #1a1739 58%, #100e26 100%);
+  color: #ece0c0; text-align: center;
 }
 .cover {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 96px 76px 170px;
+  padding: 108px 86px 208px;
 }
 .backcover {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 90px 76px;
+  padding: 118px 86px 180px;
 }
-.frame { position: absolute; inset: 26px; border: 1px solid rgba(200,162,74,.40); }
-.frame::after { content: ""; position: absolute; inset: 7px; border: 1px solid rgba(200,162,74,.18); }
+.frame { position: absolute; inset: 28px; border: 1px solid rgba(196,158,74,.42); }
+.frame::after { content: ""; position: absolute; inset: 6px; border: 1px solid rgba(196,158,74,.16); }
+/* نگین (الماسِ کوچک) — با CSS ساخته می‌شود، نه گلیفِ فونت */
+.ornament {
+  width: 6px; height: 6px; background: var(--gold); transform: rotate(45deg);
+  opacity: .85; margin: 0 auto 28px;
+}
+.ornament.tight { margin: 30px auto 0; opacity: .55; }
 .cover .kicker, .backcover .kicker {
-  font-size: 12.5px; letter-spacing: 4px; text-transform: uppercase;
-  color: #b79a55; margin-bottom: 24px;
+  font-size: 11px; letter-spacing: 4.4px; text-transform: uppercase;
+  color: #b99c58; margin: 0 0 30px;
 }
-[dir="rtl"] .cover .kicker, [dir="rtl"] .backcover .kicker { letter-spacing: 1px; }
+[dir="rtl"] .cover .kicker, [dir="rtl"] .backcover .kicker {
+  letter-spacing: .8px; font-size: 12px;
+}
 .cover h1 {
-  font-size: 54px; line-height: 1.3; margin: 0 0 16px; max-width: 600px;
-  font-weight: 800; text-wrap: balance;
+  font-size: 55px; line-height: 1.28; margin: 0 0 22px; max-width: 590px;
+  font-weight: 800; text-wrap: balance; color: #f2e6c6;
 }
-[dir="ltr"] .cover h1, .cover h1.latin { font-weight: 600; }
+[dir="ltr"] .cover h1, .cover h1.latin { font-weight: 600; font-size: 60px; }
 /* عنوان/نویسنده‌ی لاتین در کتابِ فارسی با فونتِ لاتین چیده می‌شود */
 .cover h1.latin, .cover .author.latin, .runhead.latin {
   font-family: 'EB Garamond', 'Vazirmatn', serif;
 }
-.cover .author { font-size: 19px; letter-spacing: 2.5px; color: #cbb878; }
-.cover .author.latin { font-size: 21px; letter-spacing: 1.5px; }
-[dir="rtl"] .cover .author { letter-spacing: .5px; }
+.cover .author { font-size: 17px; letter-spacing: 2.4px; color: #cbb878; }
+.cover .author.latin { font-size: 19px; letter-spacing: 2px; }
+[dir="rtl"] .cover .author { letter-spacing: .4px; }
 .cover .rule, .backcover .rule {
-  width: 120px; height: 1px; margin: 28px auto;
-  background: linear-gradient(90deg, rgba(200,162,74,0), #c8a24a, rgba(200,162,74,0));
+  width: 104px; height: 1px; margin: 32px auto;
+  background: linear-gradient(90deg, rgba(196,158,74,0), #c8a24a, rgba(196,158,74,0));
 }
 .cover .blurb {
-  font-size: 20px; line-height: 1.95; color: #d8c99a;
-  max-width: 520px; font-style: italic; margin: 0;
+  font-size: 19px; line-height: 1.95; color: #d9caa0;
+  max-width: 468px; font-style: italic; margin: 0;
 }
 /* فارسی مورب (شکسته‌نویس مصنوعی) زشت می‌شود */
-[dir="rtl"] .cover .blurb { font-style: normal; }
+[dir="rtl"] .cover .blurb { font-style: normal; line-height: 2.05; }
 .cover .credit, .backcover .credit {
-  position: absolute; bottom: 74px; left: 0; right: 0;
-  display: flex; flex-direction: column; align-items: center; gap: 12px;
-  font-size: 14px; color: #c8ae6a;
+  position: absolute; bottom: 86px; left: 0; right: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  font-size: 12.5px; color: #c2a86a;
 }
-.cover .credit img, .backcover .credit img { width: 58px; height: 58px; object-fit: contain; }
+.cover .credit img, .backcover .credit img {
+  width: 54px; height: 54px; object-fit: contain;
+}
 .backcover .note {
-  font-size: 18px; line-height: 1.95; max-width: 540px; color: #d8c99a; margin: 0;
+  font-size: 17px; line-height: 2.05; max-width: 496px; color: #d9caa0;
+  margin: 0; text-wrap: balance;
 }
-.backcover .github { font-size: 14px; color: #9fb3d9; margin-top: 4px; direction: ltr; }
+.backcover .github {
+  font-size: 12.5px; color: #9fb3d9; margin-top: 2px; direction: ltr;
+  letter-spacing: .2px;
+}
 
 /* ---------------- صفحه‌ی فهرست ---------------- */
-.contents-page { background: #f4ecd8; padding: 92px 76px 104px; display: flex; flex-direction: column; }
-.contents-page h2 { font-size: 30px; margin: 0; text-align: center; font-weight: 700; }
-[dir="ltr"] .contents-page h2 { font-weight: 600; }
-.contents-page .rule { width: 84px; height: 2px; background: #c8a24a; margin: 20px auto 34px; }
-.contents-page .rows { display: flex; flex-direction: column; }
+.contents-page { display: flex; flex-direction: column; }
+.contents-page h2 {
+  font-size: 28px; margin: 0; text-align: center; font-weight: 700;
+  letter-spacing: -.1px;
+}
+[dir="ltr"] .contents-page h2 { font-weight: 600; font-size: 30px; }
+.contents-page .rule { width: 64px; height: 2px; background: var(--gold); margin: 18px auto 0; }
+.contents-page .rows { margin-top: 42px; display: flex; flex-direction: column; }
 .contents-page .row {
-  display: flex; align-items: baseline; gap: 12px; padding: 13px 0 9px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 30px;
+  align-items: start; padding: 18px 0 17px;
+  border-bottom: 1px solid var(--gold-line, rgba(179,137,60,.24));
 }
-.contents-page .row .kicker {
-  font-size: 11.5px; letter-spacing: 2.2px; color: #a5843a; white-space: nowrap;
+.contents-page .row:first-child {
+  border-top: 1px solid var(--gold-line, rgba(179,137,60,.24));
 }
-[dir="rtl"] .contents-page .row .kicker { letter-spacing: .5px; }
-.contents-page .row .name { font-size: 19px; line-height: 1.6; }
-.contents-page .row .leader {
-  flex: 1; min-width: 24px; border-bottom: 1px dotted rgba(139,116,58,.55);
-  transform: translateY(-4px);
+.contents-page .row .kicker { font-size: 10.5px; letter-spacing: 2.4px; color: #a3823a; }
+[dir="rtl"] .contents-page .row .kicker { letter-spacing: .4px; font-size: 11.5px; }
+.contents-page .row .name {
+  font-size: 21px; line-height: 1.5; font-weight: 700; margin-top: 8px;
 }
-.contents-page .row .num { font-size: 16px; color: #6d5a2c; }
+[dir="ltr"] .contents-page .row .name { font-weight: 600; font-size: 22px; }
+.contents-page .row .caption {
+  font-size: 15px; line-height: 1.8; color: #5f4e27; margin-top: 8px;
+  max-width: 480px;
+  /* ارتفاعِ ردیف باید قابلِ پیش‌بینی بماند، وگرنه فهرست از کادر می‌زند */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.contents-page .row .nums { text-align: end; white-space: nowrap; }
+.contents-page .row .num { display: block; font-size: 17px; color: #6d5a2c; }
+.contents-page .row .plate-num {
+  display: block; font-size: 11px; color: #96794a; margin-top: 9px;
+  letter-spacing: .2px;
+}
+.contents-page .edition-line {
+  margin-top: auto; padding-top: 28px; text-align: center;
+  font-size: 11.5px; color: #8a7444; letter-spacing: .3px;
+}
+/* کتابِ پربخش: فهرستِ جمع‌وجور (بدونِ کپشن، ردیف‌های کم‌ارتفاع) */
+.contents-page[data-compact] .row { padding: 12px 0 11px; }
+.contents-page[data-compact] .row .kicker { font-size: 10px; letter-spacing: 1.8px; }
+.contents-page[data-compact] .row .name { font-size: 19px; margin-top: 4px; }
+.contents-page[data-compact] .row .num { font-size: 15px; }
+.contents-page[data-compact] .row .plate-num { margin-top: 5px; }
 
 /* ---------------- صفحات متن ---------------- */
-.text-page { background: #f4ecd8; padding: 68px 68px 104px; display: flex; flex-direction: column; }
+.text-page { display: flex; flex-direction: column; }
 .runhead {
-  font-size: 11.5px; letter-spacing: 2.6px; text-transform: uppercase;
-  color: #b09a68; text-align: center; padding-bottom: 13px;
-  border-bottom: 1px solid rgba(200,162,74,.30); margin-bottom: 30px;
+  font-size: 10.5px; line-height: 14px; letter-spacing: 2.5px;
+  text-transform: uppercase; color: #a8905f; text-align: center;
+  padding-bottom: 12px; border-bottom: 1px solid var(--gold-line, rgba(179,137,60,.26));
+  margin-bottom: 28px;
 }
-[dir="rtl"] .runhead { letter-spacing: .4px; }
-.text-page .title-wrap { text-align: center; margin: 2px 0 32px; }
+[dir="rtl"] .runhead { letter-spacing: .3px; font-size: 11px; }
+.runhead.latin { font-family: 'EB Garamond', 'Vazirmatn', serif; letter-spacing: 2.6px; }
+/* صفحه‌ی آغازِ بخش سرصفحه نمی‌گیرد (عنوان بزرگ خودش آن‌جاست) */
+.runhead.blank { visibility: hidden; }
+.text-page .title-wrap { text-align: center; margin: 14px 0 32px; }
 .text-page .title-wrap .kicker {
-  font-size: 12.5px; letter-spacing: 3px; color: #a5843a; margin-bottom: 14px;
+  font-size: 11.5px; letter-spacing: 2.8px; color: #a3823a; margin-bottom: 13px;
 }
-[dir="rtl"] .text-page .title-wrap .kicker { letter-spacing: .5px; }
-.text-page h2 { font-size: 32px; line-height: 1.5; margin: 0; font-weight: 700; }
-[dir="ltr"] .text-page h2 { font-weight: 600; }
-.text-page .title-wrap .rule { width: 84px; height: 2px; background: #c8a24a; margin: 18px auto 0; }
+[dir="rtl"] .text-page .title-wrap .kicker { letter-spacing: .4px; font-size: 12px; }
+.text-page h2 { font-size: 32px; line-height: 1.45; margin: 0; font-weight: 700; }
+[dir="ltr"] .text-page h2 { font-weight: 600; font-size: 34px; }
+.text-page .title-wrap .rule {
+  width: 72px; height: 2px; background: var(--gold); margin: 17px auto 0;
+}
 .text-page p {
-  font-size: 22.5px; line-height: 1.98; margin: 0; text-align: justify;
+  font-size: 22.5px; line-height: 45px; margin: 0; text-align: justify;
   hyphens: auto; -webkit-hyphens: auto;
 }
-[dir="ltr"] .text-page p { font-size: 24px; line-height: 1.9; }
-.text-page p + p { text-indent: 1.7em; }
+[dir="ltr"] .text-page p { font-size: 23.5px; line-height: 46px; }
+.text-page p + p { text-indent: 1.8em; }
 /* بدونِ این، فلکس‌باکس متنِ سرریز را به‌جای بیرون‌زدن، مچاله می‌کند
    (ارتفاعِ پاراگراف‌ها ۰ می‌شود و شناساگرِ سرریز هیچ‌وقت هشدار نمی‌دهد) */
 .text-page > *:not(.footer) { flex: 0 0 auto; }
 
 /* ---------------- صفحات تصویری ---------------- */
-.image-page { background: #f4ecd8; display: flex; flex-direction: column; }
-.image-page .img-half { width: 100%; height: 590px; object-fit: cover; display: block; }
+.image-page { display: flex; flex-direction: column; }
+.image-page .img-half { width: 100%; height: 588px; object-fit: cover; display: block; }
 .image-page .img-half.placeholder {
-  background: radial-gradient(ellipse at center, #2a2359 0%, #14122e 72%);
-  box-shadow: inset 0 0 0 18px #f4ecd8, inset 0 0 0 20px #c8a24a;
+  background: radial-gradient(ellipse at center, #2c255c 0%, #100e26 78%);
+  box-shadow: inset 0 0 0 20px var(--paper, #f7f0de), inset 0 0 0 22px #c8a24a;
 }
 .image-page .caption-half {
-  flex: 1; padding: 44px 74px 96px; text-align: center;
-  display: flex; flex-direction: column; justify-content: center;
+  flex: 1; padding: 56px 92px 104px; text-align: center;
+  display: flex; flex-direction: column; justify-content: center; align-items: center;
+  border-top: 1px solid var(--gold-line, rgba(179,137,60,.24));
 }
 .image-page .caption-half .kicker {
-  font-size: 12.5px; letter-spacing: 3px; color: #a5843a; margin-bottom: 16px;
+  font-size: 11px; letter-spacing: 3px; color: #a3823a; margin-bottom: 16px;
 }
-[dir="rtl"] .image-page .caption-half .kicker { letter-spacing: .5px; }
-.image-page .caption-half h3 { font-size: 27px; line-height: 1.55; margin: 0; font-weight: 700; }
-[dir="ltr"] .image-page .caption-half h3 { font-weight: 600; }
-.image-page .caption-half .rule { width: 64px; height: 1px; background: #c8a24a; margin: 18px auto 20px; }
-.image-page .caption-half p { font-size: 20px; line-height: 1.9; color: #3a3018; margin: 0; }
+[dir="rtl"] .image-page .caption-half .kicker { letter-spacing: .4px; font-size: 12px; }
+.image-page .caption-half h3 {
+  font-size: 27px; line-height: 1.5; margin: 0; font-weight: 700; max-width: 520px;
+}
+[dir="ltr"] .image-page .caption-half h3 { font-weight: 600; font-size: 29px; }
+.image-page .caption-half .rule {
+  width: 56px; height: 1px; background: var(--gold); margin: 20px auto 18px;
+}
+.image-page .caption-half p {
+  font-size: 19px; line-height: 1.95; color: #42351a; margin: 0; max-width: 520px;
+}
 
 /* ---------------- فوتر ---------------- */
 .footer {
-  position: absolute; bottom: 26px; left: 0; right: 0; height: 32px;
+  position: absolute; bottom: 30px; left: 0; right: 0; height: 30px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 12px; color: #8a7a4f;
+  font-size: 11px; color: #8a7a4f;
 }
-.footer .page-num { font-size: 12.5px; color: #7c6a3f; }
+.footer .page-num { font-size: 11.5px; color: #7c6a3f; letter-spacing: .5px; }
+/* نشانِ برند در گوشه‌ی بیرونیِ پایین (متقابل با شیرازه) */
 .footer .brand {
-  position: absolute; left: 46px; top: 0; height: 32px;
+  position: absolute; top: 0; height: 30px;
+  inset-inline-end: 44px; inset-inline-start: auto;
   direction: ltr; display: flex; align-items: center; gap: 8px;
 }
-[dir="rtl"] .footer .brand { left: auto; right: 46px; }
-.footer .brand img { width: 24px; height: 24px; object-fit: contain; }
-.footer .brand span { font-size: 10.5px; letter-spacing: .3px; color: #9a875a; }
+.page[data-side="verso"] .footer .brand {
+  inset-inline-start: 44px; inset-inline-end: auto;
+}
+.footer .brand img { width: 22px; height: 22px; object-fit: contain; }
+.footer .brand span { font-size: 10px; letter-spacing: .3px; color: #9a875a; }
+
+/* ---------------- حاشیه‌های چاپیِ آینه‌ای ---------------- */
+/* سمتِ شیرازه (inner) پهن‌تر است و جای دوخت/بازشدنِ کتاب را می‌دهد؛
+   سمتِ بیرونی (outer) بازتر می‌ماند. «recto» صفحه‌ی سمتِ راست و
+   «verso» صفحه‌ی سمتِ چپِ دفتر است. */
+.text-page, .contents-page {
+  padding-top: 72px; padding-bottom: 100px;
+  padding-inline-start: var(--outer, 62px);
+  padding-inline-end: var(--inner, 84px);
+}
+.contents-page { padding-top: 82px; }
+/* در هر دو جهتِ چیدمان، سمتِ شروعِ خواندن روی شیرازه است؛ پس قاعده
+   مستقل از RTL/LTR است: recto شیرازه در start، verso شیرازه در end. */
+.text-page[data-side="recto"], .contents-page[data-side="recto"] {
+  padding-inline-start: var(--inner, 84px);
+  padding-inline-end: var(--outer, 62px);
+}
+.text-page[data-side="verso"], .contents-page[data-side="verso"] {
+  padding-inline-start: var(--outer, 62px);
+  padding-inline-end: var(--inner, 84px);
+}
 """
 
 
@@ -325,25 +427,48 @@ def _sentence_blocks(paragraphs):
             yield pid, sid, sentence.strip()
 
 
+def _wrap(piece: str, fill: int, cpl: int):
+    """
+    شبیه‌سازیِ شکستنِ خط برای یک قطعه‌ی متن: ``(خط‌های مصرفشده، پرشدگیِ خطِ
+    آخر)``. برخلافِ تقسیمِ نویسه‌ای، این‌جا فضای هدررفته‌ی آخرِ هر خط (که
+    آخرین کلمه جا نشده) حساب می‌شود — همان چیزی که صفحه را واقعاً پر می‌کند.
+    """
+    lines, fill = 0, max(0, fill)
+    for word in piece.split():
+        w = len(word)
+        if fill == 0:
+            fill = w
+        elif fill + 1 + w <= cpl:
+            fill += 1 + w
+        else:
+            lines += 1
+            fill = w
+        while fill > cpl:  # کلمه‌ای بلندتر از یک خط
+            fill -= cpl
+            lines += 1
+    return lines, fill
+
+
 def _paginate_paragraphs(paragraphs, max_chars=750, first_page_chars=None,
                          chars_per_line=None):
     """
     متن را به صفحه‌هایی با سقفِ خط می‌شکند، طوری که:
-    * هیچ صفحه‌ای از کادر بیرون نزند (شکستِ پاراگراف یک خطِ کامل هدر می‌دهد)،
+    * هیچ صفحه‌ای از کادر بیرون نزند،
     * هیچ صفحه‌ای بی‌دلیل نیمه‌خالی نماند (بسته‌بندی در سطحِ جمله)،
     * هیچ متنی گم نشود و هیچ کلمه‌ای وسطِ بریده نشود.
     """
-    import math
-
     cpl = max(10, int(chars_per_line or DEFAULT_CHARS_PER_LINE))
     max_lines = max(3, int(max_chars) // cpl)
     first_lines = (max(3, int(first_page_chars) // cpl)
                    if first_page_chars else max_lines)
 
-    pages, current, used, last_pid = [], [], 0.0, None
+    pages, current = [], []
+    # `breaks` = تعدادِ شکستنِ خط در صفحه؛ خطِ جاری جدا شمرده می‌شود، چون
+    # نیمه‌پر است و هنوز به `breaks` اضافه نشده.
+    breaks, fill, last_pid = 0, 0, None
 
-    def flush():
-        nonlocal current, used
+    def close_page():
+        nonlocal current, breaks, fill
         if not current:
             return
         merged = []
@@ -357,23 +482,28 @@ def _paginate_paragraphs(paragraphs, max_chars=750, first_page_chars=None,
             else:
                 merged.append([pid, sid, text])
         pages.append([item[2] for item in merged])
-        current, used = [], 0.0
+        current, breaks, fill = [], 0, 0
 
     for pid, sid, sentence in _sentence_blocks(paragraphs):
-        limit = first_lines if not pages else max_lines
-        for piece in _split_long_piece(sentence, max(1, limit) * cpl):
-            if current and pid != last_pid:
-                # پاراگرافِ تازه از خطِ بعد شروع می‌شود؛ بقیه‌ی خط هدر می‌رود.
-                used = math.ceil(used)
-            if current and used + len(piece) / cpl > limit + 1e-9:
-                flush()
+        # قطعه‌ی تک‌نفره‌ای که از یک صفحه بلندتر است با فاصله می‌شکند؛
+        # یک خط احتیاط می‌گذاریم تا خودِ قطعه از کادر بیرون نزند.
+        chunk = max(3, max_lines - 1) * cpl
+        for piece in _split_long_piece(sentence, chunk):
+            limit = first_lines if not pages else max_lines
+            if current and pid != last_pid and fill:
+                # پاراگرافِ تازه از خطِ بعد شروع می‌شود.
+                breaks += 1
+                fill = 0
+            added, end_fill = _wrap(piece, fill, cpl)
+            used = breaks + added + (1 if end_fill else 0)
+            if current and used > limit:
+                close_page()
                 limit = max_lines
-            if current and pid == last_pid and sid != current[-1][1]:
-                used += 1 / cpl  # فاصله‌ی بینِ جمله‌های یک پاراگراف
-            used += len(piece) / cpl
+                added, end_fill = _wrap(piece, 0, cpl)
             current.append((pid, sid, piece))
+            breaks, fill = breaks + added, end_fill
             last_pid = pid
-    flush()
+    close_page()
     return pages or [[]]
 
 
@@ -405,6 +535,39 @@ def _has_rtl(text: str) -> bool:
     return any(0x0590 <= ord(ch) <= 0x08FF for ch in str(text or ""))
 
 
+# قراردادِ Project Gutenberg برای ایتالیک: _متن_
+_EMPH_RE = re.compile(r"(?<![\w_])_([^_\n]{1,400})_(?![\w_])")
+# نشانه‌ی ایتالیکِ جفت‌نشده (تا در چاپ به‌شکلِ زیرخط دیده نشود)
+# زیرخطِ چسبیده به مرزِ واژه (نه وسطِ واژه‌ای مثل snake_case)
+_STRAY_MARK_RE = re.compile(r"(?:^|(?<![^\W_]))_+|_+(?![^\W_])")
+
+
+def _plain(text: str) -> str:
+    """متنِ امن برای HTML، بدونِ نشانه‌های جفت‌نشده‌ی ایتالیک."""
+    return _STRAY_MARK_RE.sub("", escape(str(text or "")))
+
+
+def _rich(text: str) -> str:
+    """متنِ امن با ایتالیک: _متن_ → <em>متن</em> (قراردادِ گوتنبرگ)."""
+    text = str(text or "")
+    out, pos = [], 0
+    for m in _EMPH_RE.finditer(text):
+        out.append(_plain(text[pos:m.start()]))
+        out.append(f"<em>{_plain(m.group(1))}</em>")
+        pos = m.end()
+    out.append(_plain(text[pos:]))
+    return "".join(out)
+
+
+_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+
+def _num(value, lang: str) -> str:
+    """شماره‌ها در کتابِ فارسی با ارقامِ فارسی چاپ می‌شوند."""
+    text = str(value)
+    return text.translate(_FA_DIGITS) if lang == "fa" else text
+
+
 def _logo_img(logo_uri: str):
     if not logo_uri:
         return ""
@@ -434,7 +597,8 @@ def _section_labels(sec, idx, lang):
 
 def render_book_html(*, lang: str, title: str, author: str, blurb: str,
                      sections: list, logo_uri: str, github_url: str,
-                     out_html_path: Path, line_cap: int = None):
+                     out_html_path: Path, line_cap: int = None,
+                     contents_rows: int = None):
     """
     HTML کتاب را می‌سازد و نقشه‌ی صفحه‌ها را برمی‌گرداند:
 
@@ -463,20 +627,24 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
     author_class = "author latin" if not _has_rtl(author) else "author"
     author_html = (f'<div class="{author_class}">{escape(str(author))}</div>'
                    if author else "")
-    runhead_class = "runhead latin" if not _has_rtl(title) else "runhead"
-    runhead_text = escape(str(title or ""))
+    runhead_text = str(title or "")
     title_class = "latin" if not _has_rtl(title) else ""
 
+    cpl = CHARS_PER_LINE.get(lang, 60)
     line_cap = int(line_cap or line_cap_for(lang))
-    max_chars = line_cap * CHARS_PER_LINE.get(lang, 61)
-    pages = _layout_pages(sections, line_cap=line_cap,
-                          chars_per_line=CHARS_PER_LINE.get(lang, 61))
+    max_chars = line_cap * cpl
+    pages = _layout_pages(sections, line_cap=line_cap, chars_per_line=cpl)
 
     # ---- شماره‌ی صفحه‌ها: ۱ جلد، بعد صفحه(های) فهرست، بعد بدنه ----
     contents_rows_count = sum(1 for p in pages
                               if p["kind"] == "text" and p["first"])
-    contents_page_count = ((contents_rows_count + CONTENTS_ROWS_PER_PAGE - 1)
-                           // CONTENTS_ROWS_PER_PAGE) if sections else 0
+    described = len(sections) <= CONTENTS_DESCRIBED_MAX_SECTIONS
+    rows_per_page = (CONTENTS_ROWS_DESCRIBED if described
+                     else CONTENTS_ROWS_PER_PAGE)
+    if contents_rows:  # حلقه‌ی بازچاپ وقتی فهرست از کادر می‌زند
+        rows_per_page = max(2, int(contents_rows))
+    contents_page_count = ((contents_rows_count + rows_per_page - 1)
+                           // rows_per_page) if sections else 0
     body_start = 2 + contents_page_count
 
     number_by_page = {}
@@ -485,11 +653,22 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
         number_by_page[pos] = num
         num += 1
 
-    contents = []
+    def side_of(page_number):
+        """صفحه‌ی فرد = سمتِ راست (recto)، زوج = سمتِ چپ (verso)."""
+        return "recto" if page_number % 2 else "verso"
+
+    plate_number = {page["index"]: number_by_page[pos]
+                    for pos, page in enumerate(pages) if page["kind"] == "plate"}
+
+    contents, contents_rows = [], []
     for pos, page in enumerate(pages):
         if page["kind"] == "text" and page["first"]:
             sec_title, kicker = _section_labels(page["section"], page["index"], lang)
-            contents.append((kicker, sec_title, number_by_page[pos]))
+            number = number_by_page[pos]
+            contents.append((kicker, sec_title, number))
+            contents_rows.append((kicker, sec_title,
+                                  str(page["section"].get("caption") or "").strip(),
+                                  number, plate_number.get(page["index"])))
 
     page_count = body_start + len(pages) - 1 if pages else 1 + contents_page_count
     if sections:
@@ -512,13 +691,14 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
 
     # ---------------- جلد ----------------
     output.append(f'''
-<div class="page cover" dir="{dir_attr}">
+<div class="page cover" dir="{dir_attr}" data-side="recto">
   <div class="frame"></div>
+  <div class="ornament"></div>
   <div class="kicker">{escape(kicker_top)}</div>
   <h1 class="{title_class}">{escape(str(title))}</h1>
   {author_html}
-  <div class="rule"></div>
-  <p class="blurb">{escape(str(blurb or ""))}</p>
+  <div class="rule"></div>          <p class="blurb">{_rich(blurb or "")}</p>
+  <div class="ornament tight"></div>
   <div class="credit">
     {_logo_img(logo_attr)}
     <div>{escape(label_by)}: <span dir="ltr">@SaliSalvia</span></div>
@@ -527,37 +707,57 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
 ''')
 
     # ---------------- فهرست ----------------
+    plate_label = "تصویر" if fa else "Plate"
+    if fa:
+        edition_line = (f"{_num(len(sections), lang)} بخش · "
+                        f"{_num(len(plate_number), lang)} تصویر")
+    else:
+        edition_line = (f"{len(sections)} sections · "
+                        f"{len(plate_number)} plates")
+
+    def _contents_row(kicker, name, caption, number, plate):
+        body = (f'<div class="kicker">{escape(str(kicker))}</div>'
+                f'<div class="name">{escape(str(name))}</div>')
+        if described and caption:
+            body += f'<div class="caption">{_rich(caption)}</div>'
+        nums = f'<span class="num">{_num(number, lang)}</span>'
+        if plate:
+            nums += (f'<span class="plate-num">{escape(plate_label)} '
+                     f'{_num(plate, lang)}</span>')
+        return (f'<div class="row"><div class="row-main">{body}</div>'
+                f'<div class="nums">{nums}</div></div>')
+
     for i in range(contents_page_count):
-        chunk = contents[i * CONTENTS_ROWS_PER_PAGE:
-                         (i + 1) * CONTENTS_ROWS_PER_PAGE]
-        rows = "".join(
-            '<div class="row">'
-            f'<div class="kicker">{escape(str(kicker))}</div>'
-            f'<div class="name">{escape(str(name))}</div>'
-            '<div class="leader"></div>'
-            f'<div class="num">{number}</div>'
-            "</div>"
-            for kicker, name, number in chunk
-        )
+        chunk = contents_rows[i * rows_per_page:(i + 1) * rows_per_page]
+        rows = "".join(_contents_row(*row) for row in chunk)
+        edition = ('<div class="edition-line">'
+                   f'{escape(edition_line)}</div>'
+                   if i == contents_page_count - 1 else "")
+        num = 2 + i
+        compact = "" if described else ' data-compact="1"'
         output.append(f'''
-<div class="page contents-page" dir="{dir_attr}">
+<div class="page contents-page" dir="{dir_attr}" data-side="{side_of(num)}"{compact}>
   <h2>{escape(contents_title)}</h2>
   <div class="rule"></div>
   <div class="rows">{rows}</div>
-  {_footer_html(2 + i, logo_attr)}
+  {edition}
+  {_footer_html(_num(num, lang), logo_attr)}
 </div>
 ''')
 
     # ---------------- بدنه ----------------
     for pos, page in enumerate(pages):
         page_num = number_by_page[pos]
+        side = side_of(page_num)
         sec = page["section"]
         sec_title, kicker = _section_labels(sec, page["index"], lang)
         if page["kind"] == "text":
-            text_html = "".join(f"<p>{escape(str(p))}</p>"
+            text_html = "".join(f"<p>{_rich(p)}</p>"
                                for p in page["paragraphs"])
             heading = ""
             if page["first"]:
+                # صفحه‌ی آغازِ بخش: عنوانِ بزرگ، بی‌سرصفحه (تكرارِ عنوان لازم نیست)
+                head = '<div class="runhead blank">&nbsp;</div>'
                 heading = (
                     '<div class="title-wrap">'
                     f'<div class="kicker">{escape(kicker)}</div>'
@@ -565,12 +765,18 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
                     '<div class="rule"></div>'
                     "</div>"
                 )
+            else:
+                # سرصفحه‌ی کتاب: سمتِ چپ نامِ کتاب، سمتِ راست عنوانِ بخش
+                label = runhead_text if side == "verso" else sec_title
+                head_class = ("runhead" if _has_rtl(label)
+                              else "runhead latin")
+                head = f'<div class="{head_class}">{escape(str(label))}</div>'
             output.append(f'''
-<div class="page text-page" dir="{dir_attr}">
-  <div class="{runhead_class}">{runhead_text}</div>
+<div class="page text-page" dir="{dir_attr}" data-side="{side}">
+  {head}
   {heading}
   {text_html}
-  {_footer_html(page_num, logo_attr)}
+  {_footer_html(_num(page_num, lang), logo_attr)}
 </div>
 ''')
         else:
@@ -584,23 +790,24 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
                 # شماره‌بندی کتاب بهم نریزد.
                 img_html = '<div class="img-half placeholder"></div>'
             output.append(f'''
-<div class="page image-page" dir="{dir_attr}">
+<div class="page image-page" dir="{dir_attr}" data-side="{side}">
   {img_html}
   <div class="caption-half">
     <div class="kicker">{escape(kicker)}</div>
     <h3>{escape(sec_title)}</h3>
     <div class="rule"></div>
-    <p>{escape(caption)}</p>
+    <p>{_rich(caption)}</p>
   </div>
-  {_footer_html(page_num, logo_attr)}
+  {_footer_html(_num(page_num, lang), logo_attr)}
 </div>
 ''')
 
     # ---------------- پشت‌جلد ----------------
     if sections:
         output.append(f'''
-<div class="page backcover" dir="{dir_attr}">
+<div class="page backcover" dir="{dir_attr}" data-side="{side_of(page_count)}">
   <div class="frame"></div>
+  <div class="ornament"></div>
   <div class="kicker">{escape(colophon_title)}</div>
   <div class="note">{escape(colophon_body)}</div>
   <div class="rule"></div>
@@ -616,6 +823,8 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
     out_html_path.write_text("".join(output), encoding="utf-8")
 
     outline = [(str(title), 0, 1)]
+    if contents_page_count:
+        outline.append((contents_title, 1, 2))
     for idx, page in enumerate(pages):
         if page["kind"] == "text" and page["first"]:
             sec_title, kicker = _section_labels(page["section"], page["index"], lang)
@@ -629,6 +838,8 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
         "max_chars": max_chars,
         "outline": outline,
         "contents": contents,
+        "contents_rows": rows_per_page,
+        "contents_page_count": contents_page_count,
     }
 
 
@@ -638,8 +849,8 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
 
 _OVERFLOW_JS = """
 () => {
-  // محتوا باید بالای نوار فوتر بماند (پایینِ صفحه ۱۰۴ پیکسل حاشیه دارد)
-  const H = 1123, SAFE = 104;
+  // محتوا باید بالای نوار فوتر بماند (پایینِ صفحه ۱۰۰ پیکسل حاشیه دارد)
+  const H = 1123, SAFE = 100;
   const bad = [];
   document.querySelectorAll('.page').forEach((el, i) => {
     const pageRect = el.getBoundingClientRect();
@@ -728,8 +939,23 @@ def _stamp_pdf(pdf_path: Path, *, metadata=None, outline=None):
     try:
         reader = PdfReader(str(pdf_path))
         writer = PdfWriter(clone_from=reader)
-        if metadata:
-            writer.add_metadata({str(k): str(v) for k, v in metadata.items()})
+        meta = {str(k): str(v) for k, v in (metadata or {}).items()}
+        # /Lang کلیدِ اطلاعاتی نیست؛ روی catalog می‌نشیند (زبانِ سند برای
+        # صفحه‌خوان‌ها و موتورهای جست‌وجو).
+        lang = meta.pop("/Lang", "")
+        if meta:
+            writer.add_metadata(meta)
+        try:
+            from pypdf.generic import (BooleanObject, DictionaryObject,
+                                       NameObject, TextStringObject)
+            root = writer._root_object
+            if lang:
+                root[NameObject("/Lang")] = TextStringObject(lang)
+            root[NameObject("/ViewerPreferences")] = DictionaryObject({
+                NameObject("/DisplayDocTitle"): BooleanObject(True),
+            })
+        except Exception:
+            pass  # نسخه‌ی قدیمیِ pypdf — متادیتای اصلی نوشته شده است
         if outline:
             stack = {}
             for title, page_index, level in outline:

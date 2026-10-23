@@ -44,26 +44,44 @@ def _render_pdf(*, workdir, out_dir, slug, lang, title, author, blurb, sections,
         "/Title": title,
         "/Author": author or "",
         "/Subject": blurb or "",
+        "/Keywords": ", ".join(k for k in (title, author, "visual edition") if k),
         "/Creator": "Salvia Visual Book Engine",
         "/Producer": "Salvia Visual Book Engine",
+        "/Lang": lang,
     }
 
     layout, overflow = None, []
+    line_cap = render.line_cap_for(lang, 0)
+    contents_rows = None
     for attempt in range(render.MAX_ATTEMPTS):
-        line_cap = render.line_cap_for(lang, attempt)
         layout = render.render_book_html(
             lang=lang, title=title, author=author, blurb=blurb,
             sections=sections, logo_uri=logo_uri, github_url=github_url,
             out_html_path=html_path, line_cap=line_cap,
+            contents_rows=contents_rows,
         )
         overflow = render.html_to_pdf(html_path, pdf_path,
                                       metadata=metadata,
                                       outline=layout.get("outline"))
         if not overflow:
             break
-        print(f"هشدار: {len(overflow)} صفحه سرریز کرد؛ "
-              f"صفحه‌بندی با {render.LINE_STEP_DOWN} خطِ کمتر دوباره انجام می‌شود "
-              f"(تلاش {attempt + 1}/{render.MAX_ATTEMPTS}).")
+        # دو نوع سرریز داریم و درمانِ هرکدام فرق دارد: صفحه‌های مقدمه (فهرست)
+        # با ردیفِ کمتر درست می‌شوند، صفحه‌های بدنه با خطِ کمتر. اگر فهرست را
+        # با کم‌کردنِ خطِ بدنه «درمان» کنیم، فقط کاغذ هدر می‌رود.
+        front_pages = layout.get("contents_page_count", 0) + 1
+        front = [p for p in overflow if p <= front_pages]
+        body = [p for p in overflow if p > front_pages]
+        if front:
+            contents_rows = max(3, int((contents_rows or
+                                        layout.get("contents_rows", 5)) * 0.7))
+            print(f"هشدار: {len(front)} صفحه‌ی فهرست سرریز کرد؛ "
+                  f"فهرست با {contents_rows} ردیف در صفحه دوباره چیده می‌شود "
+                  f"(تلاش {attempt + 1}/{render.MAX_ATTEMPTS}).")
+        if body:
+            line_cap = max(6, line_cap - render.LINE_STEP_DOWN)
+            print(f"هشدار: {len(body)} صفحه‌ی متن سرریز کرد؛ "
+                  f"صفحه‌بندی با {line_cap} خط دوباره انجام می‌شود "
+                  f"(تلاش {attempt + 1}/{render.MAX_ATTEMPTS}).")
     if overflow:
         print(f"هشدار: هنوز {len(overflow)} صفحه سرریز دارد: {overflow}")
     return pdf_path, layout, overflow

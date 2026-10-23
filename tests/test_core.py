@@ -205,7 +205,8 @@ def test_render_placeholder_and_escaping(tmp_path):
     img = tmp_path / "pic.png"
     img.write_bytes(PNG_BYTES)
     sections = [
-        {"paragraphs": ["پاراگراف اول.", "پاراگراف دوم."],
+        # ۲۶ پاراگرافِ یک‌خطی → دو صفحه‌ی متن؛ صفحه‌ی دوم سرصفحه‌ی کتاب را دارد
+        {"paragraphs": ["پاراگراف کوتاه."] * 26,
          "chapter_title": "عنوان یک", "chapter_kicker": "PLATE 1",
          "caption": "کپشن <script>alert(1)</script>", "image_path": str(img)},
         {"paragraphs": ["متن بخش دوم."],
@@ -227,19 +228,39 @@ def test_render_placeholder_and_escaping(tmp_path):
     assert '<img class="img-half"' in html                      # بخشِ با تصویر
     assert html.count("<img") == 1                              # لوگو خالی است
     assert '<div class="brand"><span>' in html                  # فوتر بدون لوگو
-    assert '<div class="runhead">کتاب نمونه</div>' in html      # سرصفحه‌ی هر صفحه
-    # جلد + فهرست + ۲×(متن+تصویر) + پشت‌جلد
-    assert layout["page_count"] == 7
-    assert len(html.split('class="page ')) - 1 == 7
-    # شماره‌ی صفحه‌ها: جلد بی‌شماره، فهرست ۲، بعد ۳…۶، پشت‌جلد بی‌شماره
-    assert [int(n) for n in re.findall(
-        r'<div class="page-num">(\d+)</div>', html)] == [2, 3, 4, 5, 6]
+    # صفحه‌ی آغازِ هر بخش بی‌سرصفحه است؛ صفحه‌ی ادامه سرصفحه‌ی کتاب را دارد
+    assert html.count('class="runhead blank"') == 2
+    assert '<div class="runhead">کتاب نمونه</div>' in html
+    # جلد + فهرست + ۲×(متن+تصویر) + (متن+تصویر) + پشت‌جلد
+    assert layout["page_count"] == 8
+    assert len(html.split('class="page ')) - 1 == 8
+    # شماره‌ی صفحه‌ها: جلد بی‌شماره، فهرست ۲، بعد ۳…۷ با ارقامِ فارسی
+    assert re.findall(r'<div class="page-num">([۰-۹]+)</div>', html) == [
+        render._num(n, "fa") for n in range(2, 8)]
     # فهرست: بخش‌ها با شماره‌ی صفحه‌ی شروعشان
     assert 'class="page contents-page"' in html
-    assert [row[2] for row in layout["contents"]] == [3, 5]
+    assert [row[2] for row in layout["contents"]] == [3, 6]
     assert 'class="page cover"' in html and 'class="page backcover"' in html
     # متادیتای HTML → عنوانِ PDF
     assert "<title>کتاب نمونه — نویسنده‌ی نمونه</title>" in html
+
+
+def test_render_italics_from_underscores(tmp_path):
+    # متن‌های گوتنبرگ ایتالیک را با _..._ نشان می‌دهند؛ باید به <em> تبدیل شود،
+    # وگرنه زیرخط‌ها در چاپ دیده می‌شوند.
+    sections = [{"paragraphs": ["A line with _emphasis_ and a stray _ mark."],
+                 "chapter_title": "T", "chapter_kicker": "P",
+                 "caption": "a _captioned_ note", "image_path": None}]
+    out = tmp_path / "book.html"
+    render.render_book_html(
+        lang="en", title="B", author="A", blurb="", sections=sections,
+        logo_uri="", github_url="https://github.com/t/r", out_html_path=out)
+    html = out.read_text(encoding="utf-8")
+    assert "<em>emphasis</em>" in html
+    assert "<em>captioned</em>" in html
+    body = html.split("<body>", 1)[1]
+    assert "_emphasis_" not in body
+    assert "stray _ mark" not in body          # نشانه‌ی جفت‌نشده حذف می‌شود
 
 
 def test_render_splits_contents_over_pages(tmp_path):
@@ -311,9 +332,14 @@ def test_chunking_giant_paragraph_and_page_limit():
     max_len = illustrate.MAX_PAGES_PER_IMAGE * illustrate.CHARS_PER_PAGE
     for chunk in chunks:
         assert len(chunk) <= max_len  # هرگز بیش از سقفِ ۱۱ صفحه
-        # و با صفحه‌بندیِ render هم سازگار است
+        # و با صفحه‌بندیِ واقعیِ render هم سازگار است (همان سقفِ خطی که
+        # _layout_pages استفاده می‌کند، نه پیش‌فرضِ ۷۵۰ نویسه)
+        cpl = render.CHARS_PER_LINE["fa"]
+        line_cap = render.line_cap_for("fa", 0)
         pages = render._paginate_paragraphs(
-            illustrate.split_into_paragraphs(chunk))
+            illustrate.split_into_paragraphs(chunk), line_cap * cpl,
+            first_page_chars=(line_cap - render.FIRST_PAGE_LINES_OFFSET) * cpl,
+            chars_per_line=cpl)
         assert 1 <= len(pages) <= illustrate.MAX_PAGES_PER_IMAGE + 1
 
 
