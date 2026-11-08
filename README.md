@@ -21,9 +21,6 @@
 ;+::;;:,..........
 ```
 
-║       C I N E M A T I C   V I S U A L   B O O K   E N G I N E       ║
-```
-
 <p align="center"><b>Design & Concept by <a href="#"><b>@SaliSalvia</b></a></b></p>
 
 ---
