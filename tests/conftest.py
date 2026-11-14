@@ -94,3 +94,15 @@ class ScriptedClient:
 @pytest.fixture
 def fake_client():
     return ScriptedClient()
+
+
+@pytest.fixture(autouse=True)
+def _fast_pacing(monkeypatch):
+    """تست‌ها نباید برای فاصله‌ی ایمنِ بین درخواست‌های تصویر صبر کنند."""
+    monkeypatch.setenv("GEMINI_IMAGE_DELAY_SECONDS", "0")
+    monkeypatch.setenv("GEMINI_IMAGE_RETRY_COOLDOWN_SECONDS", "0")
+    monkeypatch.setenv("GEMINI_IMAGE_RETRY_PASSES", "1")
+    # هیچ تستی نباید به‌طورِ ناخواسته به بک‌اندِ رایگانِ Cloudflare وصل شود
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("IMAGE_BACKEND", raising=False)

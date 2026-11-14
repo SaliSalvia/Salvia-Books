@@ -788,6 +788,67 @@ def fetch_from_any_source(query, target_lang=None, *, validate=None,
 # مرحله‌ی ۶: ترجمه‌ی تازه به فارسی (در صورت نیاز)
 # ---------------------------------------------------------------------------
 
+TRANSLATE_ANY_PROMPT = """
+متنِ زیر بخشی از یک کتاب است. آن را به زبان <<LANG>> ترجمه کن و همان‌موقع
+ویرایش و پولیش کن.
+
+قواعد:
+- وفادار به متن: نه چیزی اضافه کن، نه حذف.
+- پاراگراف‌بندی و ترتیبِ رویدادها حفظ شود.
+- اگر مقصد فارسی است: فارسیِ روان، امروزی و ادبی، با نیم‌فاصلهٔ درست و
+  گیومهٔ فارسی؛ نه ترجمهٔ ماشینیِ خشک.
+- اگر مقصد انگلیسی است: انگلیسیِ طبیعی و دقیق، بدونِ کهن‌نویسیِ تصنعی.
+- هیچ توضیح، مقدمه یا یادداشتِ مترجم اضافه نکن؛ فقط متنِ ترجمه‌شده.
+
+متن:
+---
+<<CHUNK>>
+---
+"""
+
+
+def _chunk_paragraphs(text: str, chunk_chars: int):
+    """پاراگراف‌ها را به بسته‌های حداکثر `chunk_chars` نویسه‌ای گروه می‌کند."""
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    bounded = []
+    for p in paragraphs:
+        while len(p) > chunk_chars:
+            cut = p.rfind(" ", 0, chunk_chars + 1)
+            if cut <= 0:
+                cut = chunk_chars
+            bounded.append(p[:cut].rstrip())
+            p = p[cut:].lstrip()
+        if p:
+            bounded.append(p)
+    chunks, buf, buf_len = [], [], 0
+    for p in bounded:
+        if buf and buf_len + len(p) > chunk_chars:
+            chunks.append("\n\n".join(buf))
+            buf, buf_len = [], 0
+        buf.append(p)
+        buf_len += len(p)
+    if buf:
+        chunks.append("\n\n".join(buf))
+    return chunks
+
+
+def translate_text(client, models, text: str, target_lang: str,
+                   chunk_chars: int = 4000) -> str:
+    """متن را به زبانِ هدف (fa یا en) ترجمه و پولیش می‌کند، بخش‌به‌بخش."""
+    chunks = _chunk_paragraphs(text, chunk_chars)
+    if not chunks:
+        return text
+
+    name = "فارسی" if target_lang == "fa" else "English"
+    parts = []
+    for i, chunk in enumerate(chunks, 1):
+        prompt = TRANSLATE_ANY_PROMPT.replace("<<LANG>>", name).replace(
+            "<<CHUNK>>", chunk)
+        parts.append(llm.generate_text(client, models, prompt, budget_s=240.0))
+        print(f"  ترجمه بخش {i}/{len(chunks)} انجام شد")
+    return "\n\n".join(parts)
+
+
 def translate_to_persian(client, models, text: str, chunk_chars: int = 4000) -> str:
     paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
     # پاراگرافِ بلندتر از سقف هم باید بشکند تا اندازه‌ی هر فراخوانی واقعاً
@@ -868,8 +929,17 @@ def get_source_text(client, model_name: str, raw_title: str, target_lang: str,
                     candidate.read_text(encoding="utf-8")).strip()
                 if content:
                     print(f"استفاده از متن دستی: {candidate}")
+                    found_lang = guess_lang(content)
                     meta = {"source": "manual", "path": str(candidate),
-                            "lang": guess_lang(content)}
+                            "found_lang": found_lang, "lang": target_lang}
+                    # متنِ دستی هم مثل بقیه‌ی منابع باید به زبانِ نامِ کتاب
+                    # باشد؛ وگرنه همان‌جا ترجمه و پولیش می‌شود.
+                    if found_lang != target_lang:
+                        print(f"متنِ دستی {found_lang} است و کتاب باید "
+                              f"{target_lang} باشد؛ در حال ترجمه با Gemini ...")
+                        content = translate_text(client, models, content,
+                                                 target_lang)
+                        meta["translated"] = True
                     return content, norm, meta
 
     failures = []
@@ -887,21 +957,15 @@ def get_source_text(client, model_name: str, raw_title: str, target_lang: str,
     def finish(text, meta):
         text = normalize_text(text)
         found_lang = "fa" if looks_persian(text) else "en"
+        # زبانِ خروجی همان زبانِ نامِ کتاب است که کاربر تایپ کرده؛ اگر متنِ
+        # پیداشده به آن زبان نباشد، همان‌جا ترجمه و پولیش می‌شود.
+        meta["found_lang"] = found_lang
         meta["lang"] = target_lang
-        if auto_lang:
-            # زبان خروجی از خودِ متن پیروی می‌کند (بدون ترجمه‌ی غافلگیرکننده).
-            if found_lang != target_lang:
-                print("زبانِ متنِ پیدا‌شده با حدسِ اولیه فرق دارد؛ "
-                      "کتاب به زبانِ خودِ متن ساخته می‌شود.")
-            meta["lang"] = found_lang
-        elif target_lang == "fa" and found_lang == "en":
-            print("متنِ غیرفارسیِ پیدا شد؛ در حال تولید ترجمه‌ی تازه با Gemini ...")
-            text = translate_to_persian(client, models, text)
+        if found_lang != target_lang:
+            print(f"متنِ پیداشده {found_lang} است و کتاب باید {target_lang} باشد؛ "
+                  f"در حال ترجمه و پولیش با Gemini ...")
+            text = translate_text(client, models, text, target_lang)
             meta["translated"] = True
-        elif target_lang == "en" and found_lang == "fa":
-            print("هشدار: متنِ پیدا‌شده فارسی است ولی خروجی انگلیسی خواسته شده؛ "
-                  "کتاب به فارسی ساخته می‌شود تا صفحه‌آرایی و فونت درست بماند.")
-            meta["lang"] = "fa"
         return text, norm, meta
 
     # ۲) Project Gutenberg

@@ -115,14 +115,15 @@ def test_full_run_builds_illustrated_pdf(tmp_path, monkeypatch):
     assert "درباره‌ی این نسخه" in titles             # پشت‌جلد
 
 
-def test_auto_language_without_lang_flag(tmp_path, monkeypatch):
-    # ورودی فقط نام کتاب: زبان از خودِ متن (فایل دستیِ فارسی) گرفته می‌شود
+def test_auto_language_follows_the_typed_title(tmp_path, monkeypatch):
+    # نامِ کتاب انگلیسی تایپ شده → PDF انگلیسی؛ متنِ فارسیِ دستی ترجمه می‌شود
     _prepare(tmp_path)
     _run(tmp_path, monkeypatch, tmp_path / "no-logo.png", lang=None)
     assert [p.name for p in (tmp_path / "output").glob("*.pdf")] == [
-        "the-little-prince-fa.pdf"]
+        "the-little-prince-en.pdf"]
     report = _report(tmp_path)
-    assert report["lang"] == "fa"
+    assert report["lang"] == "en"
+    assert report["translated"] is True
     assert report["overflow_pages"] == []
 
 

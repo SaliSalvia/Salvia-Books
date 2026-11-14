@@ -1,7 +1,7 @@
 name: "📖 Build Book"
 
-# ورودی فقط دو چیز است: نام کتاب و (اختیاری) کلید API.
-# زبانِ خروجی خودکار از خودِ متن تشخیص داده می‌شود.
+# چهار ورودی: نام کتاب، کلید Gemini، کلید Cloudflare، و درصد خلاصه‌سازی.
+# زبانِ PDF همان زبانِ نامِ کتاب است که تایپ می‌شود (فارسی → فارسی، انگلیسی → انگلیسی).
 on:
   workflow_dispatch:
     inputs:
@@ -10,8 +10,17 @@ on:
         required: true
         type: string
       gemini_api_key:
-        description: "کلید Google AI (Gemini). اگر خالی بماند از سکرت GEMINI_API_KEY خوانده می‌شود."
+        description: "کلید Google AI (Gemini) — برای متن، تحلیل و ترجمه. اگر خالی بماند از سکرت GEMINI_API_KEY خوانده می‌شود."
         required: false
+        type: string
+      cloudflare_api_token:
+        description: "کلید Cloudflare Workers AI (تصویرسازیِ رایگان). اگر خالی بماند از سکرت CLOUDFLARE_API_TOKEN خوانده می‌شود."
+        required: false
+        type: string
+      summary_percent:
+        description: "درصد خلاصه‌سازی متن: ۰ = متن کامل، ۱ تا ۹۵ = فشرده‌سازی به همان درصد"
+        required: false
+        default: "0"
         type: string
 
 # حداقل دسترسی: این ورک‌فلو فقط باید متن را بخواند و artifact بسازد.
@@ -21,11 +30,17 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # چرخهی کامل (متن + تحلیل + تصویر + PDF) عمداً طولانی است؛ تصویرها با
+    # فاصلهی ایمن ساخته میشوند تا سهمیهی رایگان به 429 نخورد.
+    timeout-minutes: 360
     steps:
       - name: Mask API key in logs
         if: ${{ inputs.gemini_api_key != '' }}
         run: echo "::add-mask::${{ inputs.gemini_api_key }}"
+
+      - name: Mask Cloudflare token in logs
+        if: ${{ inputs.cloudflare_api_token != '' }}
+        run: echo "::add-mask::${{ inputs.cloudflare_api_token }}"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,20 +58,74 @@ jobs:
       - name: Install Playwright + Chromium
         run: playwright install --with-deps chromium
 
+      # پیشرفتِ ساخت (تحلیلِ هر بخش و تصویرهای ساخته‌شده) بین اجراها و
+      # تلاش‌های دوباره حفظ می‌شود؛ هیچ تحلیل/تصویری دوباره پول و وقت نمی‌گیرد.
+      - name: Cache build progress
+        uses: actions/cache@v4
+        with:
+          path: _build
+          key: book-build-${{ inputs.book_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            book-build-${{ inputs.book_name }}-${{ github.run_id }}-
+            book-build-${{ inputs.book_name }}-
+
       - name: Generate book
         working-directory: scripts
         env:
           GEMINI_KEY: ${{ inputs.gemini_api_key != '' && inputs.gemini_api_key || secrets.GEMINI_API_KEY }}
           GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL }}
           GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL }}
+          # دو صفحه متن، یک صفحه تصویر (چیدمانِ نسخه‌ی نمونه)
+          GEMINI_PAGES_PER_IMAGE: ${{ vars.GEMINI_PAGES_PER_IMAGE || '2' }}
+          # فاصله‌ی ایمن بین درخواست‌های تصویر تا سهمیه‌ی رایگان نفس بکشد
+          GEMINI_IMAGE_DELAY_SECONDS: ${{ vars.GEMINI_IMAGE_DELAY_SECONDS || '12' }}
+          GEMINI_IMAGE_RETRY_PASSES: ${{ vars.GEMINI_IMAGE_RETRY_PASSES || '2' }}
+          GEMINI_IMAGE_RETRY_COOLDOWN_SECONDS: ${{ vars.GEMINI_IMAGE_RETRY_COOLDOWN_SECONDS || '90' }}
+          # موتور تصویرسازی: auto (اول Gemini، بعد Cloudflare) | gemini | cloudflare
+          IMAGE_BACKEND: ${{ vars.IMAGE_BACKEND || 'auto' }}
+          # مسیرِ کاملاً رایگان: Workers AI روی پلن رایگان، روزی ۱۰٬۰۰۰ neuron
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token != '' && inputs.cloudflare_api_token || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_IMAGE_STEPS: ${{ vars.CLOUDFLARE_IMAGE_STEPS || '4' }}
+          # نسخهٔ دوزبانه (اختیاری؛ با Variable به نام BILINGUAL روشن می‌شود)
+          BILINGUAL: ${{ vars.BILINGUAL || 'false' }}
           BOOK_NAME: ${{ inputs.book_name }}
+          SUMMARY_PERCENT: ${{ inputs.summary_percent || '0' }}
         run: |
           test -n "$GEMINI_KEY" || { echo "کلید API خالی است. سکرت GEMINI_API_KEY را بسازید یا فیلد ورودی را پر کنید."; exit 1; }
           test -n "$BOOK_NAME" || { echo "نام کتاب خالی است."; exit 1; }
-          python generate_book.py \
-            --title "$BOOK_NAME" \
-            --api-key "$GEMINI_KEY" \
-            --github-url "https://github.com/${{ github.repository }}"
+          case "$SUMMARY_PERCENT" in
+            ''|*[!0-9]*) echo "درصد خلاصه‌سازی باید یک عدد بین ۰ تا ۹۵ باشد (دریافت: «$SUMMARY_PERCENT»)."; exit 1 ;;
+          esac
+          if [ "$SUMMARY_PERCENT" -gt 95 ]; then
+            echo "درصد خلاصه‌سازی حداکثر ۹۵ است (دریافت: $SUMMARY_PERCENT)."; exit 1
+          fi
+          # خطاهای موقت (429/5xx/قطعیِ شبکه) نباید کتابِ نیمه‌کاره تحویل بدهند:
+          # تا سه بار تلاش می‌کنیم و هر تلاش از همان کش ادامه می‌یابد.
+          for attempt in 1 2 3; do
+            echo "::group::تلاش $attempt از ۳"
+            set +e
+            python generate_book.py \
+              --title "$BOOK_NAME" \
+              --api-key "$GEMINI_KEY" \
+              --summary-percent "$SUMMARY_PERCENT" \
+              --github-url "https://github.com/${{ github.repository }}"
+            code=$?
+            set -e
+            echo "::endgroup::"
+            if [ "$code" -eq 0 ]; then
+              echo "ساخت کتاب کامل شد."
+              exit 0
+            fi
+            if [ "$code" -eq 2 ]; then
+              echo "هیچ متنی برای «$BOOK_NAME» پیدا نشد؛ تلاشِ دوباره بی‌فایده است."
+              exit 2
+            fi
+            echo "اجرا با کد $code تمام شد؛ ۳۰ ثانیه صبر و تلاشِ بعدی از همان کش ..."
+            sleep 30
+          done
+          echo "هر سه تلاش ناموفق بود؛ جزئیات در artifact اشکال‌زدایی است."
+          exit 1
 
       - name: Upload PDF artifact
         uses: actions/upload-artifact@v4
@@ -73,5 +142,6 @@ jobs:
           path: |
             _build/**/*.json
             _build/**/*.html
+            _build/**/book.html
           if-no-files-found: ignore
           retention-days: 7

@@ -16,6 +16,7 @@ generate_book.py
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -25,15 +26,18 @@ from pathlib import Path
 from google import genai
 
 from text_source import (get_source_text, guess_lang, ManualTextRequired,
-                         slugify)
+                         slugify, translate_text)
+import illustrate
+import llm
 from illustrate import build_sections, generate_blurb
 import render
+import summarize
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _render_pdf(*, workdir, out_dir, slug, lang, title, author, blurb, sections,
-                logo_uri, github_url):
+                logo_uri, github_url, alt_title=""):
     """
     HTML/PDF را می‌سازد و اگر صفحه‌ای سرریز کرده باشد، با سقفِ کمتری دوباره
     صفحه‌بندی می‌کند. خروجی: (مسیر PDF، نقشه‌ی صفحه‌ها، صفحه‌های سرریز).
@@ -57,6 +61,7 @@ def _render_pdf(*, workdir, out_dir, slug, lang, title, author, blurb, sections,
         layout = render.render_book_html(
             lang=lang, title=title, author=author, blurb=blurb,
             sections=sections, logo_uri=logo_uri, github_url=github_url,
+            alt_title=alt_title,
             out_html_path=html_path, line_cap=line_cap,
             contents_rows=contents_rows,
         )
@@ -94,7 +99,13 @@ def main():
     parser.add_argument("--api-key", default="",
                         help="کلید Gemini؛ اگر خالی بماند از GEMINI_API_KEY خوانده می‌شود")
     parser.add_argument("--lang", choices=["auto", "fa", "en"], default="auto",
-                        help="زبان خروجی؛ پیش‌فرض auto (از خودِ متن تشخیص داده می‌شود)")
+                        help="زبان خروجی؛ پیش‌فرض auto (همان زبانِ نامِ کتاب)")
+    parser.add_argument("--summary-percent", default=os.getenv("SUMMARY_PERCENT", "0"),
+                        help="درصدِ خلاصه‌سازی متن (۰ = بدون خلاصه، حداکثر ۹۵)")
+    parser.add_argument("--bilingual", action="store_true",
+                        default=(os.getenv("BILINGUAL") or "").strip().lower()
+                        in ("1", "true", "yes", "on"),
+                        help="ساخت نسخهٔ دو زبانه (متن اصلی + ترجمه)")
     parser.add_argument("--github-url", default="https://github.com/")
     parser.add_argument("--logo", default=str(REPO_ROOT / "assets" / "logo.png"))
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "output"))
@@ -115,7 +126,7 @@ def main():
     manuscripts_dir = REPO_ROOT / "manuscripts"
     manuscripts_dir.mkdir(exist_ok=True)
 
-    lang_hint = "تشخیص خودکار" if args.lang == "auto" else args.lang
+    lang_hint = ("از نامِ کتاب" if args.lang == "auto" else args.lang)
     print(f"== مرحله ۱: پیدا کردن متن برای «{args.title.strip()}» (زبان: {lang_hint}) ==")
     try:
         text, norm, meta = get_source_text(
@@ -133,12 +144,59 @@ def main():
     title_display = (norm.get("title_fa") if lang == "fa" else norm.get("title_en")) \
         or args.title.strip()
     author = norm.get("author", "")
+    alt_title = (norm.get("title_en") if lang == "fa" else norm.get("title_fa")) or ""
+
+    # ---- خلاصه‌سازیِ درصدی (اختیاری) ------------------------------------
+    percent = summarize.clamp_percent(args.summary_percent)
+    characters_source = len(text)
+    if percent:
+        print(f"== مرحله ۱٫۵: خلاصه‌سازی متن به {percent}٪ ==")
+        cache_path = workdir / f"summary-{percent}.txt"
+        signature = hashlib.sha1(
+            f"{percent}:{text}".encode("utf-8", "ignore")).hexdigest()
+        sig_path = workdir / f"summary-{percent}.sha1"
+        if (cache_path.is_file() and sig_path.is_file()
+                and sig_path.read_text(encoding="utf-8").strip() == signature):
+            text = cache_path.read_text(encoding="utf-8")
+            print(f"خلاصه از کش خوانده شد ({len(text):,} نویسه).")
+        else:
+            text = summarize.summarize_text(client, text, percent, lang)
+            try:
+                cache_path.write_text(text, encoding="utf-8")
+                sig_path.write_text(signature, encoding="utf-8")
+            except OSError:
+                pass
+        print(f"طول متن: {characters_source:,} → {len(text):,} نویسه "
+              f"({len(text) / max(1, characters_source) * 100:.0f}٪)")
 
     print("== مرحله ۲: نوشتن توضیح جلد ==")
     blurb = generate_blurb(client, title_display, author, text[:2000], lang)
 
     print("== مرحله ۳: تحلیل بخش‌ها و تولید تصاویر ==")
     sections = build_sections(client, text, lang, img_dir)
+
+    # ---- نسخهٔ دو زبانه: هر بخش یک ترجمه‌ی روبه‌رو می‌گیرد ----------------
+    alt_lang = "en" if lang == "fa" else "fa"
+    if args.bilingual and sections:
+        print(f"== مرحله ۳٫۵: آماده‌سازی نسخهٔ دوزبانه ({alt_lang}) ==")
+        models = llm.text_models()
+        for index, sec in enumerate(sections, start=1):
+            body = "\n\n".join(sec.get("paragraphs", []))
+            try:
+                translated = translate_text(client, models, body, alt_lang,
+                                            chunk_chars=4000)
+            except Exception as exc:
+                print(f"هشدار: ترجمه‌ی بخش {index} ناموفق بود "
+                      f"({type(exc).__name__}: {exc})؛ این بخش یک‌زبانه می‌ماند.")
+                translated = ""
+            if translated.strip():
+                sec["alt_lang"] = alt_lang
+                sec["alt_paragraphs"] = illustrate.split_into_paragraphs(
+                    translated)
+        print("بخش‌های دوزبانه: "
+              f"{sum(1 for s in sections if s.get('alt_paragraphs'))}"
+              f"/{len(sections)}")
+
     n_images = sum(1 for s in sections if s.get("image_path"))
     print(f"تعداد بخش‌ها: {len(sections)} | تصاویر تولیدشده: {n_images}")
     if sections and n_images < len(sections):
@@ -160,7 +218,7 @@ def main():
     pdf_path, layout, overflow = _render_pdf(
         workdir=workdir, out_dir=out_dir, slug=slug, lang=lang,
         title=title_display, author=author, blurb=blurb, sections=sections,
-        logo_uri=logo_uri, github_url=args.github_url,
+        logo_uri=logo_uri, github_url=args.github_url, alt_title=alt_title,
     )
 
     report = {
@@ -170,8 +228,13 @@ def main():
         "source": meta.get("source"),
         "translated": bool(meta.get("translated")),
         "characters": len(text),
+        "characters_source": characters_source,
+        "summary_percent": percent,
+        "bilingual": bool(args.bilingual),
         "sections": len(sections),
         "images": n_images,
+        "pages_per_image": illustrate.pages_per_image(),
+        "image_backend": illustrate.image_backend(),
         "pages": layout.get("page_count"),
         "line_cap": layout.get("line_cap"),
         "max_chars": layout.get("max_chars"),

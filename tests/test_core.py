@@ -331,7 +331,7 @@ def test_chunking_giant_paragraph_and_page_limit():
     assert len(chunks) >= 3
     max_len = illustrate.MAX_PAGES_PER_IMAGE * illustrate.CHARS_PER_PAGE
     for chunk in chunks:
-        assert len(chunk) <= max_len  # هرگز بیش از سقفِ ۱۱ صفحه
+        assert len(chunk) <= max_len  # هرگز بیش از سقفِ ۲ صفحه
         # و با صفحه‌بندیِ واقعیِ render هم سازگار است (همان سقفِ خطی که
         # _layout_pages استفاده می‌کند، نه پیش‌فرضِ ۷۵۰ نویسه)
         cpl = render.CHARS_PER_LINE["fa"]
@@ -341,6 +341,59 @@ def test_chunking_giant_paragraph_and_page_limit():
             first_page_chars=(line_cap - render.FIRST_PAGE_LINES_OFFSET) * cpl,
             chars_per_line=cpl)
         assert 1 <= len(pages) <= illustrate.MAX_PAGES_PER_IMAGE + 1
+
+
+def test_chunking_puts_two_text_pages_per_plate():
+    # ریتمِ خواسته‌شده: دو صفحه متن، یک صفحه تصویر. تقسیم باید با صفحه‌بندیِ
+    # واقعیِ render اندازه‌گیری شود، نه با تخمینِ تعداد نویسه.
+    paragraphs = [
+        f"پاراگراف شماره {i} است و برای پرکردنِ صفحه کمی طول دارد. "
+        + "یک جمله‌ی دیگر هم اینجا هست. " * 3
+        for i in range(120)
+    ]
+    chunks = illustrate.chunk_text_by_target_pages(paragraphs, lang="fa")
+    assert len(chunks) >= 5
+    cpl = render.CHARS_PER_LINE["fa"]
+    line_cap = render.line_cap_for("fa", 0)
+    counts = []
+    for chunk in chunks:
+        pages = render._paginate_paragraphs(
+            illustrate.split_into_paragraphs(chunk), line_cap * cpl,
+            first_page_chars=(line_cap - render.FIRST_PAGE_LINES_OFFSET) * cpl,
+            chars_per_line=cpl)
+        counts.append(len(pages))
+    assert max(counts) <= 2            # هیچ بخشی بیشتر از دو صفحه متن نیست
+    assert counts.count(2) >= len(counts) - 1   # تقریباً همه دقیقاً دو صفحه
+    # و متن کامل، بدون افتادنِ حتی یک واژه
+    assert " ".join(chunks).split() == " ".join(paragraphs).split()
+
+
+def test_layout_rhythm_is_two_text_pages_then_one_plate(tmp_path):
+    # خروجی نهایی: بعد از هر دو صفحه متن، یک صفحه‌ی تصویر می‌آید.
+    paragraphs = ["جمله‌ی کوتاهی برای پرکردنِ صفحه. " * 5 for _ in range(60)]
+    chunks = illustrate.chunk_text_by_target_pages(paragraphs, lang="fa")
+    sections = [
+        {"paragraphs": illustrate.split_into_paragraphs(chunk),
+         "chapter_title": f"بخش {i}", "chapter_kicker": f"PLATE {i}",
+         "caption": "کپشن", "image_path": None}
+        for i, chunk in enumerate(chunks, start=1)
+    ]
+    layout = render._layout_pages(
+        sections, line_cap=render.line_cap_for("fa", 0),
+        chars_per_line=render.CHARS_PER_LINE["fa"])
+    kinds = ["T" if p["kind"] == "text" else "P" for p in layout]
+    # هر بخش: ۱ یا ۲ صفحه متن و بعد یک پلیت تصویری
+    assert kinds.count("P") == len(sections)
+    for block in "".join(kinds).split("P")[:-1]:
+        assert 1 <= len(block) <= 2
+
+
+def test_pages_per_image_env_override(monkeypatch):
+    assert illustrate.pages_per_image() == 2
+    monkeypatch.setenv("GEMINI_PAGES_PER_IMAGE", "3")
+    assert illustrate.pages_per_image() == 3
+    monkeypatch.setenv("GEMINI_PAGES_PER_IMAGE", "نامعتبر")
+    assert illustrate.pages_per_image() == 2
 
 
 def test_analyze_chunk_bad_json_falls_back():
@@ -454,7 +507,8 @@ def test_get_source_text_all_sources_empty(tmp_path, monkeypatch):
     assert "manuscripts/unknown-book-xyz-en.txt" in str(exc.value)
 
 
-def test_get_source_text_auto_adopts_found_language(tmp_path, monkeypatch):
+def test_get_source_text_auto_keeps_title_language(tmp_path, monkeypatch):
+    # نامِ انگلیسی + متنِ انگلیسی → بدون ترجمه، خروجی انگلیسی
     mdir = tmp_path / "manuscripts"
     mdir.mkdir()
     novel = ("It was a bright cold day in April and the clocks were "
@@ -464,8 +518,24 @@ def test_get_source_text_auto_adopts_found_language(tmp_path, monkeypatch):
     client = ScriptedClient()
     text, norm, meta = ts.get_source_text(client, None, "1984", "auto", mdir)
     assert meta["lang"] == "en"
-    assert meta.get("translated") is None       # در حالت خودکار ترجمه نمی‌شود
+    assert meta.get("translated") is None
     assert "clocks were striking" in text
+
+
+def test_persian_title_wins_over_english_source(tmp_path, monkeypatch):
+    # نامِ فارسی + متنِ انگلیسی → ترجمه و پولیش به فارسی (زبانِ نام تعیین‌کننده است)
+    mdir = tmp_path / "manuscripts"
+    mdir.mkdir()
+    novel = ("It was a bright cold day in April and the clocks were "
+             "striking thirteen. ") * 60
+    monkeypatch.setattr(ts, "find_public_domain_text",
+                        lambda *a, **k: (novel, {"title": "x"}))
+    client = ScriptedClient()
+    text, norm, meta = ts.get_source_text(
+        client, None, "۱۹۸۴", "auto", mdir)
+    assert meta["lang"] == "fa"
+    assert meta["translated"] is True
+    assert client.contents_matching("ترجمه")
 
 
 def test_get_source_text_auto_uses_manual_manuscript(tmp_path, monkeypatch):
@@ -482,7 +552,9 @@ def test_get_source_text_auto_uses_manual_manuscript(tmp_path, monkeypatch):
     text, norm, meta = ts.get_source_text(
         client, None, "The Little Prince", "auto", mdir)
     assert meta["source"] == "manual"
-    assert meta["lang"] == "fa"                 # زبان از خودِ فایل دستی
+    # نامِ انگلیسی است، پس خروجی انگلیسی و متنِ فارسی دستی ترجمه می‌شود
+    assert meta["lang"] == "en"
+    assert meta["translated"] is True
 
 
 def test_get_source_text_explicit_en_with_persian_source(tmp_path, monkeypatch):
@@ -493,8 +565,10 @@ def test_get_source_text_explicit_en_with_persian_source(tmp_path, monkeypatch):
                         lambda *a, **k: (persian, {"title": "x"}))
     client = ScriptedClient()
     text, norm, meta = ts.get_source_text(client, None, "Shahnameh", "en", mdir)
-    assert meta["lang"] == "fa"  # صفحه‌آرایی با زبانِ واقعیِ متن هم‌خوان می‌شود
-    assert "فارسی از یک کتاب" in text
+    # خروجیِ انگلیسی خواسته شده است، پس متنِ فارسی ترجمه و پولیش می‌شود
+    assert meta["lang"] == "en"
+    assert meta["translated"] is True
+    assert client.contents_matching("ترجمه")
 
 
 def test_validate_candidate_accept_and_reject():

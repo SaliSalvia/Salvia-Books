@@ -237,6 +237,24 @@ em { font-style: normal; }
 }
 [dir="ltr"] .text-page p { font-size: 23.5px; line-height: 46px; }
 .text-page p + p { text-indent: 1.8em; }
+/* صفحه‌های نسخه‌ی دوزبانه: متنِ روبه‌رو در زبانِ دیگر، کمی کوچک‌تر و
+   با جهتِ درست، ولی حاشیه‌ی شیرازه دست‌نخورده می‌ماند. */
+.text-page.alt-page p { font-size: 19.5px; line-height: 1.95; }
+[dir="rtl"] .text-page.alt-page p {
+  direction: ltr; text-align: left;
+  font-family: 'EB Garamond', 'Vazirmatn', serif;
+}
+[dir="ltr"] .text-page.alt-page p {
+  direction: rtl; text-align: justify;
+  font-family: 'Vazirmatn', 'EB Garamond', serif;
+}
+[dir="rtl"] .text-page.alt-page .runhead,
+[dir="rtl"] .text-page.alt-page .title-wrap { direction: ltr; }
+[dir="ltr"] .text-page.alt-page .runhead,
+[dir="ltr"] .text-page.alt-page .title-wrap { direction: rtl; }
+.cover .alt-title {
+  font-size: 18px; letter-spacing: 1.4px; color: #bfae7f; margin-top: 10px;
+}
 /* بدونِ این، فلکس‌باکس متنِ سرریز را به‌جای بیرون‌زدن، مچاله می‌کند
    (ارتفاعِ پاراگراف‌ها ۰ می‌شود و شناساگرِ سرریز هیچ‌وقت هشدار نمی‌دهد) */
 .text-page > *:not(.footer) { flex: 0 0 auto; }
@@ -522,6 +540,19 @@ def _layout_pages(sections, *, line_cap, chars_per_line):
         for text_idx, paragraphs in enumerate(text_pages):
             pages.append({"kind": "text", "index": idx, "first": text_idx == 0,
                           "paragraphs": paragraphs, "section": sec})
+        # نسخه‌ی دوزبانه: صفحه‌های متنِ زبانِ مقابل، درست پس از متنِ اصلی
+        alt = sec.get("alt_paragraphs") or []
+        if alt:
+            alt_lang = sec.get("alt_lang") or ("en" if chars_per_line == CHARS_PER_LINE["fa"] else "fa")
+            alt_cpl = CHARS_PER_LINE.get(alt_lang, chars_per_line)
+            alt_pages = _paginate_paragraphs(
+                alt, line_cap * alt_cpl, chars_per_line=alt_cpl)
+            if alt_pages == [[]]:
+                alt_pages = []
+            for paragraphs in alt_pages:
+                pages.append({"kind": "text", "index": idx, "first": False,
+                              "alt": True, "alt_lang": alt_lang,
+                              "paragraphs": paragraphs, "section": sec})
         pages.append({"kind": "plate", "index": idx, "section": sec})
     return pages
 
@@ -598,7 +629,7 @@ def _section_labels(sec, idx, lang):
 def render_book_html(*, lang: str, title: str, author: str, blurb: str,
                      sections: list, logo_uri: str, github_url: str,
                      out_html_path: Path, line_cap: int = None,
-                     contents_rows: int = None):
+                     contents_rows: int = None, alt_title: str = ""):
     """
     HTML کتاب را می‌سازد و نقشه‌ی صفحه‌ها را برمی‌گرداند:
 
@@ -697,6 +728,7 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
   <div class="kicker">{escape(kicker_top)}</div>
   <h1 class="{title_class}">{escape(str(title))}</h1>
   {author_html}
+  {f'<div class="alt-title" dir="ltr">{escape(str(alt_title))}</div>' if alt_title else ''}
   <div class="rule"></div>          <p class="blurb">{_rich(blurb or "")}</p>
   <div class="ornament tight"></div>
   <div class="credit">
@@ -755,6 +787,7 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
             text_html = "".join(f"<p>{_rich(p)}</p>"
                                for p in page["paragraphs"])
             heading = ""
+            page_alt = bool(page.get("alt"))
             if page["first"]:
                 # صفحه‌ی آغازِ بخش: عنوانِ بزرگ، بی‌سرصفحه (تكرارِ عنوان لازم نیست)
                 head = '<div class="runhead blank">&nbsp;</div>'
@@ -767,12 +800,15 @@ def render_book_html(*, lang: str, title: str, author: str, blurb: str,
                 )
             else:
                 # سرصفحه‌ی کتاب: سمتِ چپ نامِ کتاب، سمتِ راست عنوانِ بخش
-                label = runhead_text if side == "verso" else sec_title
+                if page_alt:
+                    label = alt_title or runhead_text
+                else:
+                    label = runhead_text if side == "verso" else sec_title
                 head_class = ("runhead" if _has_rtl(label)
                               else "runhead latin")
                 head = f'<div class="{head_class}">{escape(str(label))}</div>'
             output.append(f'''
-<div class="page text-page" dir="{dir_attr}" data-side="{side}">
+<div class="page text-page{' alt-page' if page_alt else ''}" dir="{dir_attr}" data-side="{side}">
   {head}
   {heading}
   {text_html}
@@ -964,8 +1000,10 @@ def _stamp_pdf(pdf_path: Path, *, metadata=None, outline=None):
                     continue
                 parent = stack.get(level - 1)
                 try:
-                    item = writer.add_outline_item(title, page_index,
-                                                   parent=parent)
+                    # آرگومان‌ها کلیدواژه‌ای‌اند؛ pypdf 8 آرگومانِ موقعیتی را
+                    # حذف می‌کند و در ۷ هم اخطار منسوخ‌شدن می‌داد.
+                    item = writer.add_outline_item(
+                        title=title, page_number=page_index, parent=parent)
                 except Exception:
                     continue
                 stack[level] = item
